@@ -219,6 +219,8 @@ void test_status_matches_fixture() {
   sys.sdOk = true;
   sys.sdUsedMb = 12.5f;
   sys.sdTotalMb = 29819.4f;
+  sys.scaleCalibrated = true;
+  sys.scaleRaw = 1843210;
 
   EngineStatus st;
   st.reservoir.scaleValid = true;
@@ -231,6 +233,12 @@ void test_status_matches_fixture() {
   st.dose.plantId = "monstera";
   st.dose.ml = 60;
   st.dose.dispensedMl = 22.5f;
+  st.lastDose.valid = true;
+  st.lastDose.plantId = "monstera";
+  st.lastDose.ml = 98.2f;
+  st.lastDose.onTimeMs = 54500;
+  st.lastDose.closedLoop = true;
+  st.lastDose.at = 1767258000;
   st.mlTodayTotal = 230;
   PlantStatus a;
   a.id = "monstera";

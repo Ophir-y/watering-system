@@ -29,10 +29,20 @@
     "daysLeft": 8.6,
     "low": false,
     "empty": false,
-    "floatLow": false
+    "floatLow": false,
+    "scaleCalibrated": true,
+    "scaleRaw": 1843210
   },
   "environment": { "valid": true, "tempC": 23.4, "humidityPct": 48, "vpdKPa": 1.5, "lux": 5400 },
   "dose": { "plantId": "monstera", "channel": 0, "kind": "auto", "ml": 60, "dispensedMl": 22.5 },
+  "lastDose": {
+    "plantId": "monstera",
+    "channel": 0,
+    "ml": 98.2,
+    "onTimeMs": 54500,
+    "closedLoop": true,
+    "at": 1767258000
+  },
   "mlTodayTotal": 230,
   "plants": [
     {

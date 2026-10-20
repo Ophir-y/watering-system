@@ -570,6 +570,8 @@ void statusToJson(const EngineStatus& st, const SystemInfo& sys, const Settings&
   res["low"] = st.reservoir.low;
   res["empty"] = st.reservoir.empty;
   res["floatLow"] = st.reservoir.floatLow;
+  res["scaleCalibrated"] = sys.scaleCalibrated;
+  res["scaleRaw"] = sys.scaleRaw;
 
   JsonObject env = o["environment"].to<JsonObject>();
   env["valid"] = st.env.valid;
@@ -597,6 +599,17 @@ void statusToJson(const EngineStatus& st, const SystemInfo& sys, const Settings&
     d["dispensedMl"] = r1(st.dose.dispensedMl);
   } else {
     o["dose"] = nullptr;
+  }
+  if (st.lastDose.valid) {
+    JsonObject d = o["lastDose"].to<JsonObject>();
+    d["plantId"] = st.lastDose.plantId;
+    d["channel"] = st.lastDose.channel;
+    d["ml"] = r1(st.lastDose.ml);
+    d["onTimeMs"] = st.lastDose.onTimeMs;
+    d["closedLoop"] = st.lastDose.closedLoop;
+    d["at"] = st.lastDose.at;
+  } else {
+    o["lastDose"] = nullptr;
   }
   o["mlTodayTotal"] = r1(st.mlTodayTotal);
 

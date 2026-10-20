@@ -212,8 +212,8 @@ void Engine::handleInterlocks(const Inputs& in) {
         scaleBadSinceMs_ = in.monoMs;
       } else if (in.monoMs - scaleBadSinceMs_ >= kScaleFaultAfterMs) {
         raise(AlertCode::ScaleFault, Severity::Warning, -1,
-              "The reservoir scale is not responding. Doses fall back to timed mode; the float switch "
-              "still protects against running dry.");
+              "The reservoir scale is not responding or not calibrated. Doses fall back to timed mode; the "
+              "float switch still protects against running dry.");
       }
     } else {
       scaleBadSinceMs_ = -1;
@@ -422,14 +422,15 @@ GlobalState Engine::globalState() const {
   return g;
 }
 
-void Engine::startDose(int c, float ml, SessionKind kind) {
+void Engine::startDose(int c, float ml, SessionKind kind, bool openLoop) {
   const PlantProfile& p = *plantAt(c);
   DoseRequest req;
   req.channel = static_cast<uint8_t>(c);
   req.ml = ml;
   req.flowMlPerS = effectiveFlow(p);
   req.maxOnMs = maxOnTimeMs(settings_.limits, ml, req.flowMlPerS);
-  req.closedLoop = settings_.reservoir.scaleEnabled && last_.scaleOk;
+  req.closedLoop = !openLoop && settings_.reservoir.scaleEnabled && last_.scaleOk;
+  doseTimed_ = openLoop;
 
   // Record the dispense before any water moves, so a power cut mid-dose is accounted for.
   dispenseInProgress_ = true;
@@ -457,15 +458,24 @@ void Engine::stepDose(const Inputs& in) {
   chn.lastDoseEndMs = in.monoMs;
   dispenseInProgress_ = false;
 
+  lastDose_.valid = true;
+  lastDose_.channel = static_cast<uint8_t>(c);
+  lastDose_.plantId = plantAt(c) ? plantAt(c)->id : std::string();
+  lastDose_.ml = ml;
+  lastDose_.onTimeMs = dose_.onTimeMs();
+  lastDose_.closedLoop = dose_.request().closedLoop;
+  lastDose_.at = in.now;
+
   if (doseKind_ == SessionKind::Manual) {
     if (ml > 0) {
       if (in.timeValid) chn.runtime.lastSessionEndS = in.now;
       chn.sessionMono = true;
       chn.lastSessionMonoMs = in.monoMs;
     }
-    event(EventType::Watering, c, "manual", ml,
-          fault == DoseFault::None ? "Manual watering"
-                                   : std::string("Manual watering stopped: ") + doseFaultName(fault));
+    std::string detail = doseTimed_ ? fmt("Timed outlet run (%.1f s)", dose_.onTimeMs() / 1000.0f)
+                                    : std::string("Manual watering");
+    if (fault != DoseFault::None) detail += std::string(" stopped: ") + doseFaultName(fault);
+    event(EventType::Watering, c, doseTimed_ ? "timed" : "manual", ml, detail);
   } else if (fault == DoseFault::None) {
     chn.planner.onDoseFinished(ml, in.monoMs, plantAt(c) ? plantAt(c)->soakMin : 10);
   } else {
@@ -614,7 +624,16 @@ void Engine::handleReport(int c, const SessionReport& r, const Inputs& in) {
 
 // ------------------------------------------------------------------ commands
 
-std::string Engine::manualWater(const std::string& plantId, float ml) {
+std::string Engine::manualWater(const std::string& plantId, float ml) { return manualDose(plantId, ml, false); }
+
+std::string Engine::timedRun(const std::string& plantId, float seconds) {
+  const int idx = plantIndex(plantId);
+  if (idx < 0) return "not_found";
+  if (!(seconds >= 1 && seconds <= 60)) return "invalid_amount";
+  return manualDose(plantId, seconds * std::max(plants_[idx].outlet.flowMlPerS, 0.05f), true);
+}
+
+std::string Engine::manualDose(const std::string& plantId, float ml, bool timed) {
   const int idx = plantIndex(plantId);
   if (idx < 0) return "not_found";
   const int c = plants_[idx].channel;
@@ -628,7 +647,7 @@ std::string Engine::manualWater(const std::string& plantId, float ml) {
   req.ml = ml;
   const Verdict v = evaluateDispense(settings_.limits, globalState(), plants_[idx], chn.runtime, chn.monitor.health(), req);
   if (!v.allowed) return blockReasonName(v.reason);
-  startDose(c, v.ml, SessionKind::Manual);
+  startDose(c, v.ml, SessionKind::Manual, timed);
   return "";
 }
 
@@ -710,6 +729,7 @@ EngineStatus Engine::status() const {
     s.dose.ml = dose_.request().ml;
     s.dose.dispensedMl = dose_.dispensedMl();
   }
+  s.lastDose = lastDose_;
   s.mlTodayTotal = mlTodayTotal_;
   for (const auto& p : plants_) {
     if (p.channel >= kMaxPlants) continue;

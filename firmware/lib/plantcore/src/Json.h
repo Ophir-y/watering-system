@@ -38,6 +38,8 @@ struct SystemInfo {
   bool sdOk = false;
   float sdUsedMb = 0;
   float sdTotalMb = 0;
+  bool scaleCalibrated = false;
+  int32_t scaleRaw = 0;
 };
 
 // Plants. fromJson applies only the keys present (partial update), then validates.

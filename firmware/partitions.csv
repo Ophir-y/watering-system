@@ -1,0 +1,8 @@
+# 4 MB flash: two OTA app slots (the dashboard is compiled into the app), NVS for
+# settings/plants/state, and a core-dump area for post-mortem debugging.
+# Name,   Type, SubType,  Offset,   Size,     Flags
+nvs,      data, nvs,      0x9000,   0x10000,
+otadata,  data, ota,      0x19000,  0x2000,
+app0,     app,  ota_0,    0x20000,  0x1E0000,
+app1,     app,  ota_1,    0x200000, 0x1E0000,
+coredump, data, coredump, 0x3E0000, 0x10000,

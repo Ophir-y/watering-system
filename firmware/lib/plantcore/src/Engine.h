@@ -56,6 +56,17 @@ struct DoseStatus {
   float dispensedMl = 0;
 };
 
+// The most recent completed dispense: used to calibrate outlet flow.
+struct LastDose {
+  bool valid = false;
+  uint8_t channel = 0;
+  std::string plantId;
+  float ml = 0;
+  uint32_t onTimeMs = 0;
+  bool closedLoop = false;
+  EpochS at = 0;
+};
+
 struct EngineStatus {
   bool automationEnabled = true;
   bool emergencyStop = false;
@@ -64,6 +75,7 @@ struct EngineStatus {
   EnvSnapshot env;
   float vpdKPa = 0;
   DoseStatus dose;
+  LastDose lastDose;
   float mlTodayTotal = 0;
   std::vector<PlantStatus> plants;
   int alertsCritical = 0;
@@ -94,6 +106,8 @@ class Engine {
 
   // Commands. Return "" on success, otherwise a short error code.
   std::string manualWater(const std::string& plantId, float ml);
+  // Opens the outlet for a fixed time (open loop) so its flow can be measured.
+  std::string timedRun(const std::string& plantId, float seconds);
   void emergencyStop(const std::string& why);
   std::string resume();
   void setAutomation(bool enabled);
@@ -111,6 +125,7 @@ class Engine {
   const std::vector<PlantProfile>& plants() const { return plants_; }
   int plantIndex(const std::string& id) const;
   bool doseActive() const { return !dose_.idle(); }
+  bool emergencyStopped() const { return emergencyStop_; }
 
  private:
   struct Channel {
@@ -145,7 +160,8 @@ class Engine {
   void stepDose(const Inputs& in);
   void stepPlanners(const Inputs& in);
   void handleReport(int ch, const SessionReport& r, const Inputs& in);
-  void startDose(int ch, float ml, SessionKind kind);
+  void startDose(int ch, float ml, SessionKind kind, bool openLoop = false);
+  std::string manualDose(const std::string& plantId, float ml, bool timed);
 
   bool sensorUsable(int ch, const Inputs& in) const;
   float secondsSinceLastSession(int ch, const Inputs& in) const;
@@ -166,6 +182,8 @@ class Engine {
   std::array<Channel, kMaxPlants> ch_{};
   DoseController dose_;
   SessionKind doseKind_ = SessionKind::Auto;
+  bool doseTimed_ = false;
+  LastDose lastDose_;
   ReservoirModel reservoir_;
   AlertManager alerts_;
   Inputs last_;

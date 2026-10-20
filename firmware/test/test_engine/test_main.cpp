@@ -76,6 +76,37 @@ void test_manual_watering() {
   TEST_ASSERT_EQUAL_STRING("not_found", f.engine.manualWater("nope", 50).c_str());
 }
 
+void test_timed_run_for_flow_calibration() {
+  Fixture f;
+  f.world.flowMlPerS[0] = 3.0f;  // real flow differs from the profile's 2 ml/s
+  run(f.world, f.engine, 2 * kMin);
+  f.engine.tick(f.world.inputs());  // commands run right after a tick, as in the firmware
+  TEST_ASSERT_EQUAL_STRING("invalid_amount", f.engine.timedRun("fern", 0.5f).c_str());
+  TEST_ASSERT_EQUAL_STRING("", f.engine.timedRun("fern", 10).c_str());
+  const float before = f.world.reservoirMl;
+  run(f.world, f.engine, 1 * kMin);
+  EngineStatus st = f.engine.status();
+  TEST_ASSERT_TRUE(st.lastDose.valid);
+  TEST_ASSERT_FALSE(st.lastDose.closedLoop);
+  TEST_ASSERT_INT_WITHIN(300, 10000, static_cast<int>(st.lastDose.onTimeMs));
+  // 10 s at the real 3 ml/s: the user measures ~30 ml and sets the flow from that.
+  TEST_ASSERT_FLOAT_WITHIN(1.5f, 30.0f, before - f.world.reservoirMl);
+  TEST_ASSERT_EQUAL(1, f.sink.count(EventType::Watering, "timed"));
+}
+
+void test_closed_loop_dose_reports_on_time() {
+  Fixture f;
+  f.world.flowMlPerS[0] = 3.0f;
+  run(f.world, f.engine, 2 * kMin);
+  f.engine.tick(f.world.inputs());
+  TEST_ASSERT_EQUAL_STRING("", f.engine.manualWater("fern", 60).c_str());
+  run(f.world, f.engine, 2 * kMin);
+  EngineStatus st = f.engine.status();
+  TEST_ASSERT_TRUE(st.lastDose.closedLoop);
+  const float flow = st.lastDose.ml / (st.lastDose.onTimeMs / 1000.0f);
+  TEST_ASSERT_FLOAT_WITHIN(0.15f, 3.0f, flow);  // dashboard can calibrate flow from this
+}
+
 void test_leak_stops_everything_until_resume() {
   Fixture f;
   f.world.plants[0].moisture = 30;
@@ -242,6 +273,8 @@ int main() {
   RUN_TEST(test_waters_dry_plant_to_target);
   RUN_TEST(test_persists_before_opening_outlet);
   RUN_TEST(test_manual_watering);
+  RUN_TEST(test_timed_run_for_flow_calibration);
+  RUN_TEST(test_closed_loop_dose_reports_on_time);
   RUN_TEST(test_leak_stops_everything_until_resume);
   RUN_TEST(test_reservoir_empty_blocks_watering);
   RUN_TEST(test_reservoir_running_dry_mid_dose_stops_outlet);
