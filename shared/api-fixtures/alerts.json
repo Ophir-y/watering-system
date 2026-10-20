@@ -1,0 +1,28 @@
+{
+  "alerts": [
+    {
+      "id": 7,
+      "code": "reservoir_low",
+      "severity": "warning",
+      "channel": null,
+      "plantId": null,
+      "active": true,
+      "acked": false,
+      "raisedAt": 1767250000,
+      "clearedAt": null,
+      "message": "The reservoir is low: 900 ml (18%), about 1.9 days left."
+    },
+    {
+      "id": 5,
+      "code": "sensor_fault",
+      "severity": "warning",
+      "channel": 1,
+      "plantId": "snake-plant",
+      "active": false,
+      "acked": true,
+      "raisedAt": 1767200000,
+      "clearedAt": 1767210000,
+      "message": "Snake plant: moisture sensor looks disconnected or shorted."
+    }
+  ]
+}

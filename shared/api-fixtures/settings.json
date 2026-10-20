@@ -1,0 +1,35 @@
+{
+  "deviceName": "PlantCare",
+  "timezone": "IST-2IDT,M3.4.4/26,M10.5.0",
+  "tzName": "Asia/Jerusalem",
+  "southernHemisphere": false,
+  "waterWindow": { "startH": 7, "endH": 21 },
+  "quietHours": { "startH": 22, "endH": 8 },
+  "sampleIntervalS": 60,
+  "logIntervalMin": 10,
+  "automationEnabled": true,
+  "buzzerEnabled": true,
+  "leakSensorEnabled": true,
+  "limits": {
+    "hardMaxPulseMl": 250,
+    "hardMaxDailyMlPerPlant": 1500,
+    "hardMaxDailyMlTotal": 5000,
+    "hardMaxOnTimeS": 120
+  },
+  "reservoir": {
+    "scaleEnabled": true,
+    "floatSwitchEnabled": true,
+    "capacityMl": 5000,
+    "fullHeightMm": 250,
+    "lowPct": 20,
+    "emptyMl": 150,
+    "lowDaysLeft": 2
+  },
+  "notify": {
+    "enabled": true,
+    "server": "https://ntfy.sh",
+    "topic": "plantcare-7f3k9q2x",
+    "tokenSet": false,
+    "minSeverity": "warning"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "events": [
+    {
+      "ts": 1767254400,
+      "type": "watering",
+      "plantId": "monstera",
+      "code": "auto",
+      "ml": 205,
+      "detail": "2 pulses, 33% -> 55%, target reached"
+    },
+    {
+      "ts": 1767250000,
+      "type": "alert",
+      "plantId": null,
+      "code": "reservoir_low",
+      "ml": 0,
+      "detail": "The reservoir is low: 900 ml (18%), about 1.9 days left."
+    },
+    {
+      "ts": 1767240000,
+      "type": "refill",
+      "plantId": null,
+      "code": "refill",
+      "ml": 3800,
+      "detail": "Reservoir refilled (+3800 ml)"
+    }
+  ]
+}

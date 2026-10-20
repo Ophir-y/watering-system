@@ -1,0 +1,74 @@
+{
+  "device": {
+    "name": "PlantCare",
+    "version": "0.1.0",
+    "uptimeS": 86400,
+    "timeValid": true,
+    "now": 1767261600,
+    "tzName": "Asia/Jerusalem",
+    "heapFree": 154320,
+    "resetReason": "power_on"
+  },
+  "network": {
+    "mode": "sta",
+    "ssid": "HomeWiFi",
+    "ip": "192.168.1.50",
+    "rssi": -58,
+    "apActive": false,
+    "apSsid": "PlantCare-1A2B",
+    "internet": true
+  },
+  "storage": { "sdOk": true, "sdUsedMb": 12.5, "sdTotalMb": 29819.4 },
+  "automation": { "enabled": true, "emergencyStop": false },
+  "leak": false,
+  "reservoir": {
+    "scaleValid": true,
+    "ml": 3250,
+    "pct": 65,
+    "capacityMl": 5000,
+    "daysLeft": 8.6,
+    "low": false,
+    "empty": false,
+    "floatLow": false
+  },
+  "environment": { "valid": true, "tempC": 23.4, "humidityPct": 48, "vpdKPa": 1.5, "lux": 5400 },
+  "dose": { "plantId": "monstera", "channel": 0, "kind": "auto", "ml": 60, "dispensedMl": 22.5 },
+  "mlTodayTotal": 230,
+  "plants": [
+    {
+      "id": "monstera",
+      "name": "Monstera",
+      "channel": 0,
+      "moisturePct": 33.2,
+      "raw": 17348,
+      "sensor": "ok",
+      "issue": "ok",
+      "state": "watering",
+      "triggerPct": 36.5,
+      "targetPct": 55,
+      "mlToday": 120,
+      "lastWateredAt": 1767175200,
+      "lockedOut": false,
+      "mlPerPct": 11.25,
+      "soakRemainingS": 0
+    },
+    {
+      "id": "snake-plant",
+      "name": "Snake plant",
+      "channel": 1,
+      "moisturePct": null,
+      "raw": 0,
+      "sensor": "failed",
+      "issue": "disconnected",
+      "state": "idle",
+      "triggerPct": 15,
+      "targetPct": 40,
+      "mlToday": 0,
+      "lastWateredAt": null,
+      "lockedOut": false,
+      "mlPerPct": null,
+      "soakRemainingS": 0
+    }
+  ],
+  "alerts": { "critical": 0, "warning": 1, "info": 0 }
+}
