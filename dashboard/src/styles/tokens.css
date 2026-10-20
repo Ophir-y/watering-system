@@ -1,0 +1,123 @@
+/*
+ * PlantCare tokens.
+ * Surfaces are a cool mineral gray; water-blue marks anything to do with watering;
+ * the soil ramp (dry sand -> wet loam) encodes moisture, because wet soil is darker.
+ * Status colours are fixed and always paired with an icon and a label.
+ */
+:root {
+  color-scheme: light;
+  --page: #eef1ee;
+  --surface: #fbfcfb;
+  --surface-2: #f3f6f3;
+  --surface-3: #e7ece8;
+  --ink: #142019;
+  --ink-2: #4b5750;
+  --muted: #727d76;
+  --hairline: #dce3de;
+  --hairline-strong: #c3ccc5;
+
+  --water: #1c6ea4;
+  --water-strong: #155a87;
+  --water-ink: #ffffff;
+  --water-wash: rgba(28, 110, 164, 0.1);
+  --water-wash-strong: rgba(28, 110, 164, 0.18);
+  --chart-series: #1c6ea4; /* validated: dataviz checks pass on --surface */
+
+  --soil-dry: #efe5d3;
+  --soil-1: #d9c3a0;
+  --soil-2: #a9825a;
+  --soil-3: #6e4c33;
+  --soil-wet: #3f2a1c;
+
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  --good-ink: #006300;
+  --warning-ink: #7a5000;
+  --serious-ink: #9a3d17;
+  --critical-ink: #a82828;
+  --critical-wash: rgba(208, 59, 59, 0.1);
+  --warning-wash: rgba(250, 178, 25, 0.16);
+
+  --focus: #1c6ea4;
+  --shadow: 0 1px 2px rgba(20, 32, 25, 0.05), 0 0 0 1px rgba(20, 32, 25, 0.06);
+  --shadow-raised: 0 8px 28px rgba(20, 32, 25, 0.12), 0 0 0 1px rgba(20, 32, 25, 0.06);
+
+  --font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --font-tag: 'Shantell Sans', 'Segoe Print', 'Bradley Hand', var(--font-ui);
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
+
+  --r-s: 6px;
+  --r-m: 12px;
+  --r-l: 18px;
+  --gap: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme='light'])) {
+    color-scheme: dark;
+    --page: #0e1310;
+    --surface: #161c18;
+    --surface-2: #1c231f;
+    --surface-3: #252d28;
+    --ink: #e5ece7;
+    --ink-2: #aab5ae;
+    --muted: #87928b;
+    --hairline: #29322c;
+    --hairline-strong: #3a453e;
+    --water: #4a9fd6;
+    --water-strong: #6db3e2;
+    --water-ink: #06131b;
+    --water-wash: rgba(74, 159, 214, 0.13);
+    --water-wash-strong: rgba(74, 159, 214, 0.22);
+    --chart-series: #3987e5;
+    --soil-dry: #3a3129;
+    --soil-1: #5c4734;
+    --soil-2: #8a6a4a;
+    --soil-3: #b38c62;
+    --soil-wet: #d7b386;
+    --good-ink: #3cc13c;
+    --warning-ink: #fab219;
+    --serious-ink: #f09a77;
+    --critical-ink: #ff8080;
+    --critical-wash: rgba(208, 59, 59, 0.18);
+    --warning-wash: rgba(250, 178, 25, 0.14);
+    --focus: #6db3e2;
+    --shadow: 0 0 0 1px rgba(255, 255, 255, 0.07);
+    --shadow-raised: 0 10px 30px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --page: #0e1310;
+  --surface: #161c18;
+  --surface-2: #1c231f;
+  --surface-3: #252d28;
+  --ink: #e5ece7;
+  --ink-2: #aab5ae;
+  --muted: #87928b;
+  --hairline: #29322c;
+  --hairline-strong: #3a453e;
+  --water: #4a9fd6;
+  --water-strong: #6db3e2;
+  --water-ink: #06131b;
+  --water-wash: rgba(74, 159, 214, 0.13);
+  --water-wash-strong: rgba(74, 159, 214, 0.22);
+  --chart-series: #3987e5;
+  --soil-dry: #3a3129;
+  --soil-1: #5c4734;
+  --soil-2: #8a6a4a;
+  --soil-3: #b38c62;
+  --soil-wet: #d7b386;
+  --good-ink: #3cc13c;
+  --warning-ink: #fab219;
+  --serious-ink: #f09a77;
+  --critical-ink: #ff8080;
+  --critical-wash: rgba(208, 59, 59, 0.18);
+  --warning-wash: rgba(250, 178, 25, 0.14);
+  --focus: #6db3e2;
+  --shadow: 0 0 0 1px rgba(255, 255, 255, 0.07);
+  --shadow-raised: 0 10px 30px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+}

@@ -1,0 +1,11 @@
+/* The plant-tag hand, woff2 only: every browser that runs this dashboard supports it,
+   and each extra format would be compiled into the firmware for nothing.
+   Latin glyphs; other scripts fall back to the system UI font. */
+@font-face {
+  font-family: 'Shantell Sans';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url('../../node_modules/@fontsource/shantell-sans/files/shantell-sans-latin-600-normal.woff2')
+    format('woff2');
+}
