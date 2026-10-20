@@ -1,0 +1,9 @@
+# Normalise line endings: the repo lives in WSL but is often edited from Windows.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.bin binary
+*.gz binary
+*.pdf binary

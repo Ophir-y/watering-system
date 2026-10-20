@@ -1,0 +1,24 @@
+# OS / editors
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Firmware (PlatformIO)
+firmware/.pio/
+firmware/.vscode/
+firmware/src/generated/web_assets.h
+
+# Dashboard (Node)
+dashboard/node_modules/
+dashboard/dist/
+dashboard/coverage/
+dashboard/.env.local
+*.log
+
+# Local secrets / scratch
+.env
+*.local.json

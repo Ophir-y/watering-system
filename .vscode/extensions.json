@@ -1,0 +1,9 @@
+{
+  "recommendations": [
+    "platformio.platformio-ide",
+    "ms-vscode-remote.remote-wsl",
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "editorconfig.editorconfig"
+  ]
+}
