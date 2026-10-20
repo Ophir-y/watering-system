@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:embed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-assets
+          path: firmware/src/generated/web_assets.h
+
+  firmware:
+    runs-on: ubuntu-latest
+    needs: dashboard
+    defaults:
+      run:
+        working-directory: firmware
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+      - run: pip install platformio
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-assets
+          path: firmware/src/generated
+      - name: Unit tests and simulations
+        run: pio test -e native
+      - name: ESP32 build
+        run: pio run -e esp32dev
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            firmware/.pio/build/esp32dev/firmware.bin
+            firmware/.pio/build/esp32dev/bootloader.bin
+            firmware/.pio/build/esp32dev/partitions.bin
