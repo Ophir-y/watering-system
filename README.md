@@ -8,7 +8,7 @@ An autonomous plant-watering controller on a single ESP32. Each plant has its ow
 - **Pulse-and-soak watering.** Small doses, a pause for the water to reach the sensor, then a re-measure. The system learns how much water each plant needs per 1 % of moisture and deliberately undershoots, which prevents the classic sensor-lag overwatering.
 - **Responds to the room.** Hot, dry, bright air starts watering a little sooner; cold and resting months reduce doses.
 - **Closed-loop dosing.** A scale under the reservoir measures what actually left, for pumps and gravity-fed valves alike. The same scale detects blocked outlets, valves stuck open, leaks, siphons and refills.
-- **Fails safe.** Hard daily and per-dose limits, a hardware timer on every outlet, a master rail switch, float switch, leak sensor, watchdogs, and power-cut accounting so a dose is never repeated after a restart.
+- **Fails safe.** Hard daily and per-dose limits, a hardware timer on every outlet, a master rail switch, low-water sensor, leak sensor, watchdogs, and power-cut accounting so a dose is never repeated after a restart.
 - **Works offline.** A battery-backed clock, SD-card history, its own Wi-Fi hotspot when the home network is down, and notifications queued until the internet returns.
 - **Dashboard** at `http://plantcare.local`:
   - Plant overview, moisture charts from 24 h to a year, and watering log.
@@ -20,7 +20,7 @@ An autonomous plant-watering controller on a single ESP32. Each plant has its ow
 
 The software is complete and tested on the PC: 113 firmware tests, including month-long simulations of plants, gravity valves, a dislodged sensor and a power cut mid-dose, plus 28 dashboard tests and a firmware build with the dashboard embedded. **It has not run on real hardware yet.** Follow the bring-up checklist in [docs/getting-started.md](docs/getting-started.md#8-bring-up-checklist) when the parts arrive, and watch the first waterings.
 
-The water-delivery hardware is still open: one **peristaltic pump** per plant (recommended) or a **gravity reservoir with a valve** per plant. The firmware supports both, set per plant. See [the shopping list](docs/hardware/bom.md).
+The reservoir is a **2 L Coca-Cola bottle** standing upside down on the scale, with the **master valve fitted to its cap** and one valve per plant below it ([assembly](docs/hardware/assembly.md#reservoir-the-coca-cola-bottle)). The firmware also supports peristaltic pumps, set per plant. See [the shopping list](docs/hardware/bom.md).
 
 ## Quick start
 

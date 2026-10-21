@@ -75,7 +75,7 @@ function defaultSettings(): Settings {
     reservoir: {
       scaleEnabled: true,
       floatSwitchEnabled: true,
-      capacityMl: 5000,
+      capacityMl: 1800,
       fullHeightMm: 250,
       lowPct: 20,
       emptyMl: 150,
@@ -201,9 +201,9 @@ export class MockDevice implements Transport {
   }
 
   private syntheticReservoir(t: number) {
-    const periodS = 9 * 86400;
+    const periodS = 3.5 * 86400;
     const frac = ((((t - 2 * 86400) / periodS) % 1) + 1) % 1;
-    return 4800 - 3900 * frac;
+    return 1750 - 1450 * frac;
   }
 
   private seedEvents() {

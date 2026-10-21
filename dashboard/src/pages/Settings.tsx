@@ -250,8 +250,9 @@ function GeneralSettings({ initial }: { initial: SettingsT }) {
             label="Capacity"
             value={s.reservoir.capacityMl}
             unit="ml"
-            step={500}
+            step={100}
             onChange={(v) => up('reservoir', { ...s.reservoir, capacityMl: v })}
+            hint="What the scale reads when the bottle is filled to its line."
           />
           <NumberField
             label="Water depth when full"
@@ -259,7 +260,7 @@ function GeneralSettings({ initial }: { initial: SettingsT }) {
             unit="mm"
             step={10}
             onChange={(v) => up('reservoir', { ...s.reservoir, fullHeightMm: v })}
-            hint="Only needed for gravity valves."
+            hint="From the bottle cap up to the water surface. Only needed for gravity valves."
           />
           <NumberField
             label="Warn below"
@@ -280,7 +281,7 @@ function GeneralSettings({ initial }: { initial: SettingsT }) {
             unit="ml"
             step={50}
             onChange={(v) => up('reservoir', { ...s.reservoir, emptyMl: v })}
-            hint="Keeps pump intakes under water."
+            hint="Stops before air gets into the tubing."
           />
         </div>
         <div className="row">

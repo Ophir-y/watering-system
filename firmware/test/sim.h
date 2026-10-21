@@ -90,6 +90,14 @@ struct World : IOutlets {
 
   EpochS epoch() const { return kEpoch0 + startHour * 3600 + now / 1000; }
 
+  // Engine settings whose reservoir matches this simulated one.
+  Settings settings() const {
+    Settings s;
+    s.reservoir.capacityMl = capacityMl;
+    s.reservoir.fullHeightMm = fullHeightMm;
+    return s;
+  }
+
   float channelFlow(int c) const {
     float f = flowMlPerS[c];
     if (gravity) {

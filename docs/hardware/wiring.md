@@ -14,7 +14,7 @@ Everything below matches `firmware/include/pins.h`. All logic runs at **3.3 V**;
 | 23 | SD card MOSI | |
 | 34 | HX711 DOUT | input-only pin |
 | 4 | HX711 SCK | |
-| 35 | Float switch | input-only, **10 kΩ pull-up to 3V3**; switch to GND. Closed (LOW) = water present, open (HIGH) = low. |
+| 35 | Low-water sensor | input-only, **10 kΩ pull-up to 3V3**. LOW = water present, HIGH = low. The bottle's level sensor pulls it low through a diode. The firmware and dashboard call this input the float switch. |
 | 36 (VP) | Leak sensor DO | input-only, **10 kΩ pull-up to 3V3**; LOW = wet. |
 | 0 | BOOT button | on the board. Short press: stop all watering. Hold 5 s: open the setup hotspot. |
 | 16, 17, 25, 26, 27, 32 | Outlets 1–6 | MOSFET module input, 10 kΩ pull-down to GND on each gate |
@@ -28,10 +28,11 @@ Avoid GPIO 6–11 (flash), 12 (strapping: must be low at boot) and 1/3 (serial).
 ## Power
 
 ```
- 12 V adapter ──[2 A fuse]──┬──────────────────────────► pump/valve rail (via rail switch)
+ 12 V adapter ──[3 A fuse]──┬──────────────────────────► pump/valve rail (via rail switch)
                             │
                             └──► buck converter ──► 5 V ──┬──► ESP32 5V/VIN pin
                                                           ├──► SD module VCC (5 V type)
+                                                          ├──► level sensor (brown)
                                                           └──► buzzer (+)
  ESP32 3V3 pin ──► ADS1115 ×2, SHT4x, BH1750, DS3231, HX711 VCC, moisture sensors,
                    pull-up resistors
@@ -51,7 +52,7 @@ Each sensor: **VCC → 3V3**, **GND → GND**, **AOUT → ADS input**. On each A
 
 ## Outlets
 
-### Pumps (option A)
+### Pumps (alternative)
 
 ```
             +12 V ──► P-MOSFET source
@@ -66,14 +67,26 @@ Each sensor: **VCC → 3V3**, **GND → GND**, **AOUT → ADS input**. On each A
 
 A pump runs only when **GPIO33** (rail) **and** its channel pin are high.
 
-### Gravity valves (option B)
+### Gravity valves (this build)
 
-Wire the plant valves exactly like the pumps (one MOSFET module each), and the **master valve** on its own MOSFET module driven by **GPIO33**. Put the master valve at the reservoir outlet, before the manifold, so water needs both valves open. A high-side rail switch as for the pumps is optional extra protection.
+Wire the plant valves exactly like the pumps (one MOSFET module each), and the **master valve** on its own MOSFET module driven by **GPIO33**. The master valve is the one on the bottle cap, before the manifold, so water needs both valves open. A high-side rail switch as for the pumps is optional extra protection.
+
+The master valve sits on the weighed bottle, so its wires must not pull on it: use thin, flexible two-core wire, leave a loose loop, and clip it to the shelf before it runs to the box. Put a 2-pin connector near the valve so it can be changed without rewiring.
 
 ## Reservoir
 
 - **Load cell → HX711:** red E+, black E−, white A−, green A+ (colours vary; if the reading goes down when you add weight, swap A+ and A−). HX711 **VCC → 3V3**, **DT → GPIO34**, **SCK → GPIO4**.
-- **Float switch:** one wire to **GPIO35**, the other to **GND**, plus a 10 kΩ pull-up from GPIO35 to 3V3. Mount it so it is closed with water present.
+- **Level sensor (XKC-Y25-NPN)** on GPIO35, with a 10 kΩ pull-up from GPIO35 to 3V3 and a **1N5819 diode** in the output line:
+
+  ```
+   5 V ──────────────────── brown  (VCC)
+   GND ──────────────────── blue   (GND)
+                            black  (mode): leave unconnected
+   3V3 ── 10 kΩ ──┬──────── GPIO35
+                  └──►|──── yellow (output)      diode stripe toward the sensor
+  ```
+
+  With water behind it, the sensor switches its output to GND and pulls GPIO35 low through the diode. Without water, without power, or with a broken wire, the pull-up reads HIGH: empty (fail-safe). The diode keeps the sensor's 5 V side off the ESP32 pin. Wire colours vary between sellers: check the label, then check that the reading changes when water is behind the sensor. A plain float switch from GPIO35 to GND, closed while there is water, works on the same input.
 - **Leak sensor:** VCC → 3V3, GND → GND, DO → **GPIO36**, 10 kΩ pull-up GPIO36 → 3V3.
 
 ## Other I²C parts

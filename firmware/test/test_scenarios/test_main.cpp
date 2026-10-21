@@ -49,7 +49,7 @@ void test_month_with_mixed_plants_stays_in_band() {
   World w(4);
   RecordingSink sink;
   Engine e(w, sink);
-  Settings s;
+  Settings s = w.settings();
 
   std::vector<PlantProfile> plants;
   PlantProfile fern = makePlant("fern", 0);
@@ -109,7 +109,7 @@ void test_gravity_valves_as_reservoir_drains() {
   w.flowMlPerS = {3.0f, 3.0f};  // at full head
   RecordingSink sink;
   Engine e(w, sink);
-  Settings s;
+  Settings s = w.settings();
   std::vector<PlantProfile> plants{makePlant("a", 0), makePlant("b", 1)};
   for (auto& p : plants) {
     p.outlet.type = OutletType::Valve;
@@ -150,7 +150,7 @@ void test_sensor_dislodged_midway_limits_damage() {
   Engine e(w, sink);
   std::vector<PlantProfile> plants{makePlant("fern", 0)};
   w.plants[0].dryPctPerHour = 0.6f;
-  e.configure(Settings{}, plants);
+  e.configure(w.settings(), plants);
   e.restore(PersistedState{}, w.inputs());
   Tracker t(1);
   simulate(w, e, plants, 5 * kDay, t);
@@ -181,7 +181,7 @@ void test_power_cut_mid_dose_does_not_double_water() {
   w.plants[0].moisture = 30;
   {
     Engine e(w, sink);
-    e.configure(Settings{}, plants);
+    e.configure(w.settings(), plants);
     e.restore(PersistedState{}, w.inputs());
     w.lastSampleMs = -1000000;
     run(w, e, 20000);
@@ -194,7 +194,7 @@ void test_power_cut_mid_dose_does_not_double_water() {
   w.now += 5000;
   RecordingSink sink2;
   Engine e2(w, sink2);
-  e2.configure(Settings{}, plants);
+  e2.configure(w.settings(), plants);
   e2.restore(saved, w.inputs());
   TEST_ASSERT_TRUE(e2.alerts().isActive(AlertCode::InterruptedDispense, 0));
   run(w, e2, 5 * kHour);

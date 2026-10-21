@@ -202,6 +202,7 @@ void test_settings_validation() {
 void test_status_matches_fixture() {
   Settings settings;
   settings.tzName = "Asia/Jerusalem";
+  settings.reservoir.capacityMl = 5000;
 
   SystemInfo sys;
   sys.version = "0.1.0";

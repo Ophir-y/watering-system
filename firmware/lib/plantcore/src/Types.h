@@ -43,7 +43,7 @@ struct OutletConfig {
   OutletType type = OutletType::Pump;
   float flowMlPerS = 2.0f;     // measured open-loop flow (valves: at calFillPct)
   float calFillPct = 100.0f;   // valve only: reservoir fill level when flow was measured
-  float dropMm = 300.0f;       // valve only: height of reservoir bottom above the drip outlet
+  float dropMm = 300.0f;       // valve only: height of the reservoir outlet (bottle cap) above the drip outlet
 };
 
 struct PlantProfile {
@@ -95,10 +95,10 @@ struct SafetyLimits {
 struct ReservoirConfig {
   bool scaleEnabled = true;
   bool floatSwitchEnabled = true;
-  float capacityMl = 5000;
-  float fullHeightMm = 250;  // water depth when full (valve head compensation)
+  float capacityMl = 1800;   // 2 L Coca-Cola bottle with its base cut off
+  float fullHeightMm = 250;  // water depth above the outlet when full (valve head compensation)
   float lowPct = 20;       // warning below this fill level
-  float emptyMl = 150;     // treated as empty below this (keeps pump intakes submerged)
+  float emptyMl = 150;     // treated as empty below this (keeps air out of the tubing)
   float lowDaysLeft = 2;   // warning when the forecast drops below this
 };
 

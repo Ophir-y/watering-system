@@ -65,12 +65,12 @@ Each dose may keep its outlet open for at most **1.5 × the expected time + 3 s*
 - **slow flow:** if the time limit is hit with at least 25 % delivered, the partial dose is kept;
 - after closing, it waits 4 s for drips, then **watches for 20 s**: a further loss of more than max(10 ml, 25 % of the dose) means a valve stuck open or a siphon, so it triggers an **emergency stop**, a critical alert and an outlet lockout.
 
-**Without the scale (open loop).** The outlet stays open for *dose ÷ calibrated flow*. Gravity valves correct the flow for the current water height: flow ∝ √(drop + water depth).
+**Without the scale (open loop).** The outlet stays open for *dose ÷ calibrated flow*. Gravity valves correct the flow for the current water height: flow ∝ √(drop + water depth). The depth is estimated from the fill level as if the sides were straight; in the bottle's narrow shoulder the flow estimate is up to about 10 % low, so timed doses run slightly long there. With the scale this does not matter.
 
 ## 7. Reservoir
 
 - **Level** comes from the scale: net weight (container tared out) = ml.
-- **Empty** when the float switch opens, the container is lifted off the scale, or less than 150 ml is left. Any one of them stops everything and aborts a running dose.
+- **Empty** when the low-water sensor (the float switch input) opens, the container is lifted off the scale, or less than 150 ml is left. Any one of them stops everything and aborts a running dose.
 - **Low** below 20 % or when the forecast drops under 2 days (forecast = level ÷ average daily use).
 - **Refill** detected when the stable weight rises by ≥ 200 ml. Lifting the container off and putting it back is recognised, not mistaken for a leak.
 - **Unexplained loss:** ≥ 60 ml disappearing while nothing is being watered, either suddenly (confirmed over 30 s) or accumulated within 2 h. It means a leak or a stuck valve, so it triggers an emergency stop and a critical alert. Slow evaporation never trips it.

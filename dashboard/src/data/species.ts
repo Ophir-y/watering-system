@@ -53,7 +53,7 @@ export function defaultProfile(channel: number): PlantProfile {
     enabled: true,
     autoWater: true,
     channel,
-    outlet: { type: 'pump', flowMlPerS: 2, calFillPct: 100, dropMm: 300 },
+    outlet: { type: 'valve', flowMlPerS: 2, calFillPct: 100, dropMm: 300 },
     potVolumeMl: 2000,
     soil: '',
     moisture: { critical: 20, min: 35, target: 55, max: 75 },

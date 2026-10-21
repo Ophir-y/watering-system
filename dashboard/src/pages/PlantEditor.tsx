@@ -282,7 +282,7 @@ export function PlantEditor({ id }: { id?: string }) {
                   value={draft.outlet.dropMm}
                   unit="mm"
                   step={10}
-                  hint="From the reservoir's bottom down to the drip outlet."
+                  hint="From the bottle cap down to the drip outlet."
                   onChange={(v) => set('outlet', { ...draft.outlet, dropMm: v })}
                 />
                 <NumberField

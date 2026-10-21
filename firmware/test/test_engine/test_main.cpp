@@ -15,7 +15,7 @@ struct Fixture {
   World world{2};
   RecordingSink sink;
   Engine engine{world, sink};
-  Settings settings;
+  Settings settings = world.settings();
   std::vector<PlantProfile> plants{makePlant("fern", 0), makePlant("pothos", 1)};
 
   Fixture() {
@@ -58,7 +58,7 @@ void test_persists_before_opening_outlet() {
   sink.world = &w;
   Engine e(w, sink);
   w.plants[0].moisture = 30;
-  e.configure(Settings{}, {makePlant("fern", 0)});
+  e.configure(w.settings(), {makePlant("fern", 0)});
   e.restore(PersistedState{}, w.inputs());
   run(w, e, 2 * kMin);
   TEST_ASSERT_TRUE(e.doseActive() || sink.wateredMl() > 0 || sink.persists > 0);
@@ -215,7 +215,7 @@ void test_interrupted_dispense_is_counted_on_restore() {
   World w(1);
   RecordingSink sink;
   Engine e(w, sink);
-  e.configure(Settings{}, {makePlant("fern", 0)});
+  e.configure(w.settings(), {makePlant("fern", 0)});
   PersistedState st;
   st.day = static_cast<int32_t>(w.inputs().localDay);
   st.dispenseInProgress = true;

@@ -50,7 +50,7 @@ To get the hotspot back later, hold the **BOOT** button for 5 seconds; it stays 
 
 ## 5. Add plants
 
-For each plant: **Add a plant** → choose a species (fills in the moisture band, light, temperature, humidity, watering style and resting months) → set the **channel** it is wired to and the **pot volume** → save.
+For each plant: **Add a plant** → choose a species (fills in the moisture band, light, temperature, humidity, watering style and resting months) → set the **channel** it is wired to and the **pot volume** → save. The outlet starts as **Gravity valve**: set *Drop below reservoir* to the height from the bottle cap down to that plant's drip outlet.
 
 Then on the plant page:
 
@@ -64,7 +64,7 @@ Orchids in bark: moisture sensors read poorly in bark, so the species sets **man
 
 ## 6. Reservoir scale
 
-*Room & reservoir → Calibrate the scale:* put the empty container on the scale → *Tare empty reservoir* → pour in a measured amount (1 L is good) → *Save calibration*. Then fill it up. Refills are detected from now on.
+*Room & reservoir → Calibrate the scale:* with the empty bottle, its cap and the master valve in place in the holder → *Tare empty reservoir* → pour in a measured amount (1 L is good) → *Save calibration*. Then fill the bottle to its line (about 2 cm below the cut edge) and, under *Settings → Reservoir*, enter what the scale reads as *Capacity* and the height from the cap up to the water surface as *Water depth when full*. Refills are detected from now on.
 
 ## 7. Phone notifications (optional)
 
@@ -76,7 +76,7 @@ Install the **ntfy** app (Android/iOS), *Settings → Phone notifications → Ge
 - [ ] *Run 10 s* moves water, and the scale's measurement matches the cup.
 - [ ] Pull the SD card: a *SD card* warning appears and the dashboard keeps showing the last day. Put it back: the warning clears within a minute.
 - [ ] Switch off the router: watering continues; after 10 minutes the PlantCare hotspot appears.
-- [ ] Lift the float switch: *Reservoir empty*, and nothing waters.
+- [ ] Unplug the level sensor's yellow wire at its terminal: *Reservoir empty*, and nothing waters. Plug it back: the alert clears.
 - [ ] Wet the leak sensor: everything stops, the buzzer beeps (outside quiet hours), and a phone notification arrives. Dry it and *Resume watering*.
 - [ ] Unplug a moisture sensor: within 3 minutes *Sensor problem*, and the plant's fallback policy applies.
 - [ ] Press BOOT briefly: *Stop all*. Resume from the dashboard.
@@ -87,7 +87,7 @@ Install the **ntfy** app (Android/iOS), *Settings → Phone notifications → Ge
 |---|---|
 | Moisture stuck at 0 % or "looks disconnected" | Sensor unplugged, NE555 sensor at 3.3 V, or missing ADS1115 (check its address). |
 | All moisture readings drift together | Sensor supply noise: add the 100 nF capacitors, keep sensor cables away from pump wires. |
-| "No flow" right away | Pump not primed, tube kinked, valve needs more pressure (gravity: use zero-pressure valves), or flow rate set far too high. |
+| "No flow" right away | Pump not primed, tube kinked, valve needs more pressure (gravity: use zero-pressure valves), the cover sealing the top of the bottle so no air gets in, or flow rate set far too high. |
 | Waters too often | Sensor sits where the water runs past it; the soil drains too fast; the target is too high. |
 | `unexpected_reset` after brown-out | Supply sags when a pump starts: use a stronger 12 V supply and a capacitor (470 µF+) on the 5 V rail. |
 | Can't reach `plantcare.local` | Some Android versions lack mDNS: use the IP shown in *Settings → Wi-Fi* or your router. |
