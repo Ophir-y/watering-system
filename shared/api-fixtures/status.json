@@ -1,54 +1,54 @@
 {
   "device": {
     "name": "PlantCare",
-    "version": "0.1.0",
-    "uptimeS": 86400,
+    "version": "0.2.0",
+    "uptimeS": 0,
     "timeValid": true,
-    "now": 1767261600,
+    "now": 1767254490,
     "tzName": "Asia/Jerusalem",
-    "heapFree": 154320,
-    "resetReason": "power_on"
+    "heapFree": 0,
+    "resetReason": ""
   },
   "network": {
-    "mode": "sta",
-    "ssid": "HomeWiFi",
-    "ip": "192.168.1.50",
-    "rssi": -58,
+    "mode": "",
+    "ssid": "",
+    "ip": "",
+    "rssi": 0,
     "apActive": false,
-    "apSsid": "PlantCare-1A2B",
-    "internet": true
+    "apSsid": "",
+    "internet": false
   },
-  "storage": { "sdOk": true, "sdUsedMb": 12.5, "sdTotalMb": 29819.4 },
-  "automation": { "enabled": true, "emergencyStop": false },
-  "leak": false,
-  "reservoir": {
-    "scaleValid": true,
-    "ml": 3250,
-    "pct": 65,
-    "capacityMl": 5000,
-    "daysLeft": 8.6,
-    "low": false,
-    "empty": false,
-    "floatLow": false,
-    "scaleCalibrated": true,
-    "scaleRaw": 1843210
+  "storage": {
+    "sdOk": false,
+    "sdUsedMb": 0,
+    "sdTotalMb": 0
   },
-  "environment": { "valid": true, "tempC": 23.4, "humidityPct": 48, "vpdKPa": 1.5, "lux": 5400 },
-  "dose": { "plantId": "monstera", "channel": 0, "kind": "auto", "ml": 60, "dispensedMl": 22.5 },
-  "lastDose": {
-    "plantId": "monstera",
-    "channel": 0,
-    "ml": 98.2,
-    "onTimeMs": 54500,
-    "closedLoop": true,
-    "at": 1767258000
+  "automation": {
+    "enabled": true,
+    "emergencyStop": false
   },
-  "mlTodayTotal": 230,
+  "environment": {
+    "valid": true,
+    "tempC": 23.4,
+    "humidityPct": 48,
+    "vpdKPa": 1.5,
+    "lux": 5400
+  },
   "plants": [
     {
       "id": "monstera",
       "name": "Monstera",
-      "channel": 0,
+      "node": "a0b1c2d3e401",
+      "online": true,
+      "lastSeenAt": 1767254400,
+      "nextCheckInS": 210,
+      "firmware": "0.2.0",
+      "battery": {
+        "mv": 4210,
+        "pct": 67,
+        "low": false
+      },
+      "linkPct": 100,
       "moisturePct": 33.2,
       "raw": 17348,
       "sensor": "ok",
@@ -60,14 +60,52 @@
       "lastWateredAt": 1767175200,
       "lockedOut": false,
       "mlPerPct": 11.25,
-      "soakRemainingS": 0
+      "soakRemainingS": 0,
+      "bottle": {
+        "ml": 312,
+        "pct": 20.8,
+        "capacityMl": 1500,
+        "daysLeft": 1.4,
+        "low": true,
+        "empty": false,
+        "emptyReason": "none",
+        "flowFactor": 1.13
+      },
+      "pump": {
+        "learned": true,
+        "lastRun": "ok"
+      },
+      "dosing": {
+        "ml": 60,
+        "dispensedMl": 22.5
+      },
+      "queued": [
+        {
+          "id": 1,
+          "kind": "water",
+          "arg": 80
+        }
+      ],
+      "configPending": false,
+      "repairRequested": false,
+      "buttonPressed": false
     },
     {
       "id": "snake-plant",
       "name": "Snake plant",
-      "channel": 1,
+      "node": "a0b1c2d3e402",
+      "online": true,
+      "lastSeenAt": 1767254490,
+      "nextCheckInS": 300,
+      "firmware": "0.2.0",
+      "battery": {
+        "mv": 3520,
+        "pct": 16,
+        "low": true
+      },
+      "linkPct": 100,
       "moisturePct": null,
-      "raw": 0,
+      "raw": null,
       "sensor": "failed",
       "issue": "disconnected",
       "state": "idle",
@@ -77,8 +115,79 @@
       "lastWateredAt": null,
       "lockedOut": false,
       "mlPerPct": null,
-      "soakRemainingS": 0
+      "soakRemainingS": 0,
+      "bottle": {
+        "ml": 0,
+        "pct": 0,
+        "capacityMl": 800,
+        "daysLeft": null,
+        "low": false,
+        "empty": true,
+        "emptyReason": "pump_dry",
+        "flowFactor": 1
+      },
+      "pump": {
+        "learned": false,
+        "lastRun": "dry"
+      },
+      "dosing": null,
+      "queued": [],
+      "configPending": false,
+      "repairRequested": false,
+      "buttonPressed": false
+    },
+    {
+      "id": "pothos",
+      "name": "Pothos",
+      "node": null,
+      "online": false,
+      "lastSeenAt": null,
+      "nextCheckInS": null,
+      "firmware": null,
+      "battery": null,
+      "linkPct": null,
+      "moisturePct": null,
+      "raw": null,
+      "sensor": "unknown",
+      "issue": "unknown",
+      "state": "unknown",
+      "triggerPct": 25,
+      "targetPct": 50,
+      "mlToday": 0,
+      "lastWateredAt": null,
+      "lockedOut": false,
+      "mlPerPct": null,
+      "soakRemainingS": 0,
+      "bottle": null,
+      "pump": {
+        "learned": false,
+        "lastRun": "ok"
+      },
+      "dosing": null,
+      "queued": [],
+      "configPending": false,
+      "repairRequested": false,
+      "buttonPressed": false
     }
   ],
-  "alerts": { "critical": 0, "warning": 1, "info": 0 }
+  "newNodes": [
+    {
+      "id": "a0b1c2d3e403",
+      "board": "esp32-c3-supermini",
+      "firmware": "0.2.0",
+      "lastSeenAt": 1767254400
+    }
+  ],
+  "radio": {
+    "channel": 6,
+    "checkInMin": 5,
+    "online": 2,
+    "total": 2
+  },
+  "mlTodayTotal": 120,
+  "alerts": {
+    "critical": 0,
+    "warning": 1,
+    "info": 0
+  }
 }
