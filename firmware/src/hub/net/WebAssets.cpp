@@ -2,8 +2,8 @@
 
 #include <string.h>
 
-#if __has_include("../generated/web_assets.h")
-#include "../generated/web_assets.h"
+#if __has_include("../../generated/web_assets.h")
+#include "../../generated/web_assets.h"
 static constexpr bool kEmbedded = true;
 #else
 // Built without the dashboard: the REST API still works.

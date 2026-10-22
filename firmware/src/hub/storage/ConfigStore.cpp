@@ -119,22 +119,48 @@ bool ConfigStore::savePlants(const std::vector<plantcore::PlantProfile>& plants)
   return putText("plants", text);
 }
 
-bool ConfigStore::loadState(plantcore::PersistedState& s) {
+bool ConfigStore::loadNodes(std::vector<plantlink::NodeRecord>& nodes) {
   Guard g(mutex_);
+  nodes.clear();
   std::string text;
-  if (!getText("state", text)) return false;
+  if (!getText("nodes", text)) return false;
   JsonDocument doc;
   if (deserializeJson(doc, text)) return false;
-  return plantcore::fromJson(doc.as<JsonObjectConst>(), s);
+  for (JsonObjectConst o : doc.as<JsonArrayConst>()) {
+    plantlink::NodeRecord r;
+    r.id = o["id"] | "";
+    const std::string key = o["key"] | "";
+    if (r.id.size() != 12 || key.size() != 2 * r.key.size()) continue;
+    for (size_t i = 0; i < r.key.size(); ++i) r.key[i] = static_cast<uint8_t>(strtoul(key.substr(2 * i, 2).c_str(), nullptr, 16));
+    r.keyPending = o["keyPending"] | false;
+    nodes.push_back(r);
+  }
+  return true;
 }
 
-bool ConfigStore::saveState(const plantcore::PersistedState& s) {
+bool ConfigStore::saveNodes(const std::vector<plantlink::NodeRecord>& nodes) {
   Guard g(mutex_);
   JsonDocument doc;
-  plantcore::toJson(s, doc.to<JsonObject>());
+  JsonArray arr = doc.to<JsonArray>();
+  for (const auto& r : nodes) {
+    JsonObject o = arr.add<JsonObject>();
+    o["id"] = r.id;
+    o["key"] = toHex(r.key.data(), r.key.size());
+    o["keyPending"] = r.keyPending;
+  }
   std::string text;
   serializeJson(doc, text);
-  return putText("state", text);
+  return putText("nodes", text);
+}
+
+bool ConfigStore::loadStopped() {
+  Guard g(mutex_);
+  return prefs_.getBool("stopped", false);
+}
+
+bool ConfigStore::saveStopped(bool stopped) {
+  Guard g(mutex_);
+  return prefs_.putBool("stopped", stopped) > 0;
 }
 
 ConfigStore::WifiConfig ConfigStore::loadWifi() {
@@ -151,20 +177,6 @@ bool ConfigStore::saveWifi(const WifiConfig& w) {
   prefs_.putString("wifi_ssid", w.ssid.c_str());
   prefs_.putString("wifi_pass", w.password.c_str());
   return prefs_.putString("ap_pass", w.apPassword.c_str()) > 0;
-}
-
-ConfigStore::ScaleCal ConfigStore::loadScale() {
-  Guard g(mutex_);
-  ScaleCal c;
-  c.offset = prefs_.getInt("scale_off", 0);
-  c.countsPerGram = prefs_.getFloat("scale_cpg", 0);
-  return c;
-}
-
-bool ConfigStore::saveScale(const ScaleCal& c) {
-  Guard g(mutex_);
-  prefs_.putInt("scale_off", c.offset);
-  return prefs_.putFloat("scale_cpg", c.countsPerGram) > 0;
 }
 
 bool ConfigStore::hasPassword() {

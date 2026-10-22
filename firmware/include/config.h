@@ -1,4 +1,5 @@
-// Compile-time constants. Runtime settings live in plantcore::Settings (editable in the dashboard).
+// Compile-time constants for the main station. Runtime settings live in
+// plantcore::Settings (editable in the dashboard).
 #pragma once
 
 #include <stddef.h>
@@ -11,21 +12,10 @@
 namespace config {
 
 // Tasks
-constexpr uint32_t kControlPeriodMs = 100;
-constexpr uint32_t kSafetyPeriodMs = 50;
 constexpr uint32_t kStatusPushMs = 5000;        // live status to dashboard clients
-constexpr uint32_t kControlStallCloseMs = 2000; // control task silent: close outlets
-constexpr uint32_t kControlStallRebootMs = 15000;
 constexpr uint32_t kHealthyAfterMs = 60000;     // new firmware confirmed (no OTA rollback)
-
-// Outlets: independent hardware-timer cut-off beyond the software limit
-constexpr uint32_t kHardCutoffMarginMs = 5000;
-
-// Sensors
-constexpr int kMoistureSamples = 9;             // median of N conversions per reading
-constexpr uint32_t kScaleStaleMs = 1500;        // no HX711 reading for this long = fault
-constexpr bool kLeakActiveLow = true;
-constexpr bool kFloatOpenMeansLow = true;
+constexpr uint32_t kEnvSampleMs = 60000;        // room climate read
+constexpr uint32_t kStationTickMs = 1000;       // offline detection, clock and climate for replies
 
 // Wi-Fi
 constexpr const char* kHostname = "plantcare";

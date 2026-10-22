@@ -9,17 +9,20 @@
 #include <memory>
 #include <vector>
 
-#include "../app/Controller.h"
+#include "../app/Hub.h"
 #include "../hal/TimeKeeper.h"
 #include "../storage/LogStore.h"
 #include "Auth.h"
 #include "Json.h"
 #include "Notifier.h"
+#include "Station.h"
 #include "WebAssets.h"
 #include "WifiService.h"
 #include "config.h"
 
 using namespace plantcore;
+using plantlink::CommandResult;
+using plantlink::Station;
 
 namespace {
 
@@ -73,11 +76,31 @@ void sendOk(AsyncWebServerRequest* r) {
   sendDoc(r, 200, doc);
 }
 
-// Engine command results: "" = ok, otherwise a short code.
+// "" = ok, otherwise a short code.
 void sendResult(AsyncWebServerRequest* r, const std::string& err) {
   if (err.empty()) return sendOk(r);
-  int code = err == "not_found" ? 404 : err == "busy" ? 409 : 409;
-  sendError(r, code, err);
+  sendError(r, err == "not_found" ? 404 : 409, err);
+}
+
+// A command for a node: queued now, carried out at its next check-in.
+void sendCommand(AsyncWebServerRequest* r, const CommandResult& c) {
+  if (!c.error.empty()) {
+    const int code = c.error == "not_found" ? 404 : c.error == "invalid_amount" ? 400 : 409;
+    const char* why = c.error == "no_node"          ? "This plant has no node."
+                      : c.error == "busy"           ? "Several commands are already waiting for this plant's node."
+                      : c.error == "emergency_stop" ? "Watering is stopped. Resume first."
+                                                    : "";
+    return sendError(r, code, c.error, why);
+  }
+  JsonDocument doc;
+  doc["queued"] = true;
+  doc["id"] = c.id;
+  if (c.etaS >= 0) {
+    doc["etaS"] = c.etaS;
+  } else {
+    doc["etaS"] = nullptr;
+  }
+  sendDoc(r, 202, doc);
 }
 
 bool parseBody(AsyncWebServerRequest* r, JsonDocument& doc) {
@@ -149,10 +172,7 @@ void WebApi::begin() {
       "/api/system/ota", HTTP_POST,
       [this](AsyncWebServerRequest* r) {
         if (!otaAuthorized_) return sendError(r, 401, "unauthorized", "Log in first.");
-        if (!otaError_.empty()) {
-          controller_.setMaintenance(false);
-          return sendError(r, 500, "update_failed", otaError_);
-        }
+        if (!otaError_.empty()) return sendError(r, 500, "update_failed", otaError_);
         JsonDocument doc;
         doc["ok"] = true;
         doc["message"] = "Update installed. Restarting.";
@@ -178,12 +198,10 @@ bool WebApi::authorized(AsyncWebServerRequest* r) {
   return auth_.check(token);
 }
 
-SystemInfo WebApi::systemInfo() {
-  SystemInfo s;
+plantlink::SystemInfo WebApi::systemInfo() {
+  plantlink::SystemInfo s;
   s.version = PLANTCARE_VERSION;
   s.uptimeS = esp_timer_get_time() / 1000000;
-  s.timeValid = clock_.valid();
-  s.now = clock_.now();
   s.heapFree = ESP.getFreeHeap();
   s.resetReason = resetReasonName(esp_reset_reason());
   s.wifiMode = wifi_.mode();
@@ -202,7 +220,7 @@ SystemInfo WebApi::systemInfo() {
 void WebApi::pushStatus() {
   if (events_.count() == 0) return;
   JsonDocument doc;
-  if (!controller_.status(doc.to<JsonObject>(), systemInfo())) return;
+  if (!hub_.status(doc.to<JsonObject>(), systemInfo())) return;
   std::string json;
   serializeJson(doc, json);
   events_.send(json.c_str(), "status", millis());
@@ -237,11 +255,11 @@ void WebApi::serveStatic(AsyncWebServerRequest* r) {
 
 void WebApi::handleOtaUpload(AsyncWebServerRequest* r, const String&, size_t index, uint8_t* data, size_t len,
                              bool final) {
+  // Only the main station is updated here; the nodes keep watering meanwhile.
   if (index == 0) {
     otaAuthorized_ = authorized(r);
     otaError_.clear();
     if (!otaAuthorized_) return;
-    controller_.setMaintenance(true);  // outlets closed, engine paused while flashing
     if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) otaError_ = Update.errorString();
   }
   if (!otaAuthorized_ || !otaError_.empty()) return;
@@ -314,11 +332,17 @@ void WebApi::dispatch(AsyncWebServerRequest* r) {
     return true;
   };
   JsonDocument body;
+  // Runs fn on the locked station core; false (and a 503 sent) if it stayed busy.
+  auto station = [&](const std::function<void(Station&)>& fn) {
+    if (hub_.with(fn)) return true;
+    sendError(r, 503, "busy", "The main station is busy. Try again.");
+    return false;
+  };
 
   // ---- public
   if (is(HTTP_GET, {"info"})) {
     JsonDocument doc;
-    doc["name"] = controller_.settings().deviceName;
+    doc["name"] = hub_.settings().deviceName;
     doc["version"] = PLANTCARE_VERSION;
     doc["setupRequired"] = auth_.setupRequired();
     doc["timeValid"] = clock_.valid();
@@ -333,12 +357,12 @@ void WebApi::dispatch(AsyncWebServerRequest* r) {
     if (password.size() < Auth::kMinPasswordLength) {
       return sendError(r, 400, "weak_password", "Use at least 8 characters.");
     }
-    Settings s = controller_.settings();
-    std::string err;
     JsonObjectConst patch = body["settings"];
-    if (!patch.isNull() && !fromJson(patch, s, err)) return sendError(r, 400, "invalid", err);
     if (!patch.isNull()) {
-      err = controller_.saveSettings(s);
+      Settings s = hub_.settings();
+      std::string err;
+      if (!fromJson(patch, s, err)) return sendError(r, 400, "invalid", err);
+      if (!station([&](Station& st) { err = st.saveSettings(s); })) return;
       if (!err.empty()) return sendError(r, 400, "invalid", err);
     }
     if (!clock_.valid() && body["now"].is<int64_t>()) clock_.setManual(body["now"].as<int64_t>());
@@ -385,7 +409,7 @@ void WebApi::dispatch(AsyncWebServerRequest* r) {
   // ---- status
   if (is(HTTP_GET, {"status"})) {
     JsonDocument doc;
-    if (!controller_.status(doc.to<JsonObject>(), systemInfo())) return sendError(r, 503, "busy");
+    if (!hub_.status(doc.to<JsonObject>(), systemInfo())) return sendError(r, 503, "busy");
     return sendDoc(r, 200, doc);
   }
 
@@ -393,17 +417,18 @@ void WebApi::dispatch(AsyncWebServerRequest* r) {
   if (is(HTTP_GET, {"plants"})) {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
-    for (const auto& p : controller_.plants()) toJson(p, arr.add<JsonObject>());
+    for (const auto& p : hub_.plants()) toJson(p, arr.add<JsonObject>());
     return sendDoc(r, 200, doc);
   }
   if (is(HTTP_POST, {"plants"})) {
+    // With "node": the id of a node waiting to be added; it pairs at its next check-in.
     PlantProfile p;
     const bool hasId = body["id"].is<const char*>();
     if (!hasId) p.id = "new";  // placeholder so validation passes; a real id is generated
     std::string err;
     if (!fromJson(body.as<JsonObjectConst>(), p, err)) return sendError(r, 400, "invalid", err);
     if (!hasId) p.id.clear();
-    err = controller_.savePlant(p, "");
+    if (!station([&](Station& st) { err = st.savePlant(p, ""); })) return;
     if (!err.empty()) return sendError(r, 400, "invalid", err);
     JsonDocument doc;
     toJson(p, doc.to<JsonObject>());
@@ -411,7 +436,7 @@ void WebApi::dispatch(AsyncWebServerRequest* r) {
   }
   if (seg.size() >= 2 && seg[0] == "plants") {
     const std::string id = seg[1];
-    const std::vector<PlantProfile> plants = controller_.plants();
+    const std::vector<PlantProfile> plants = hub_.plants();
     const PlantProfile* existing = findPlant(plants, id);
     if (!existing) return sendError(r, 404, "not_found", "No plant with id " + id);
 
@@ -425,48 +450,69 @@ void WebApi::dispatch(AsyncWebServerRequest* r) {
       std::string err;
       body.remove("id");
       if (!fromJson(body.as<JsonObjectConst>(), p, err)) return sendError(r, 400, "invalid", err);
-      err = controller_.savePlant(p, id);
+      if (!station([&](Station& st) { err = st.savePlant(p, id); })) return;
       if (!err.empty()) return sendError(r, 400, "invalid", err);
       JsonDocument doc;
       toJson(p, doc.to<JsonObject>());
       return sendDoc(r, 200, doc);
     }
-    if (is(HTTP_DELETE, {"plants", "*"})) return sendResult(r, controller_.deletePlant(id));
+    if (is(HTTP_DELETE, {"plants", "*"})) {
+      std::string err;
+      if (!station([&](Station& st) { err = st.deletePlant(id); })) return;
+      return sendResult(r, err);
+    }
+    CommandResult c;
     if (is(HTTP_POST, {"plants", "*", "water"})) {
       const float ml = body["ml"] | 0.0f;
-      std::string err = "busy";
-      controller_.withEngine([&](Engine& e) { err = e.manualWater(id, ml); });
-      return sendResult(r, err);
+      if (!station([&](Station& st) { c = st.water(id, ml); })) return;
+      return sendCommand(r, c);
     }
     if (is(HTTP_POST, {"plants", "*", "timed-run"})) {
       const float seconds = body["seconds"] | 0.0f;
-      std::string err = "busy";
-      controller_.withEngine([&](Engine& e) { err = e.timedRun(id, seconds); });
-      return sendResult(r, err);
+      if (!station([&](Station& st) { c = st.timedRun(id, seconds); })) return;
+      return sendCommand(r, c);
+    }
+    if (is(HTTP_POST, {"plants", "*", "refilled"})) {
+      const float ml = body["ml"] | 0.0f;  // 0 or absent: filled to capacity
+      if (!station([&](Station& st) { c = st.refilled(id, ml); })) return;
+      return sendCommand(r, c);
     }
     if (is(HTTP_POST, {"plants", "*", "clear-faults"})) {
-      std::string err = "busy";
-      controller_.withEngine([&](Engine& e) { err = e.clearLockout(id); });
-      return sendResult(r, err);
+      if (!station([&](Station& st) { c = st.clearFaults(id); })) return;
+      return sendCommand(r, c);
+    }
+    if (is(HTTP_POST, {"plants", "*", "identify"})) {
+      if (!station([&](Station& st) { c = st.identify(id); })) return;
+      return sendCommand(r, c);
     }
     if (is(HTTP_POST, {"plants", "*", "calibrate"})) {
       const std::string point = body["point"] | "";
-      if (point != "dry" && point != "wet") return sendError(r, 400, "invalid", "point must be dry or wet");
       int32_t raw = 0;
-      if (!controller_.readMoistureRaw(existing->channel, raw)) {
-        return sendError(r, 503, "sensor_error", "Could not read the moisture sensor.");
+      int64_t ageS = 0;
+      std::string err;
+      PlantProfile saved;
+      if (!station([&](Station& st) {
+            err = st.calibrate(id, point, raw, ageS);
+            if (const PlantProfile* p = st.plant(id)) saved = *p;
+          })) {
+        return;
       }
-      PlantProfile p = *existing;
-      (point == "dry" ? p.cal.rawDry : p.cal.rawWet) = raw;
-      std::string err = controller_.savePlant(p, id);
       if (!err.empty()) return sendError(r, 400, "invalid", err);
       JsonDocument doc;
       doc["raw"] = raw;
-      doc["calibration"]["rawDry"] = p.cal.rawDry;
-      doc["calibration"]["rawWet"] = p.cal.rawWet;
+      doc["ageS"] = ageS;
+      doc["calibration"]["rawDry"] = saved.cal.rawDry;
+      doc["calibration"]["rawWet"] = saved.cal.rawWet;
       return sendDoc(r, 200, doc);
     }
     return sendError(r, 404, "not_found", "Unknown API endpoint");
+  }
+
+  // ---- nodes
+  if (is(HTTP_POST, {"nodes", "*", "repair"})) {
+    std::string err;
+    if (!station([&](Station& st) { err = st.repairNode(seg[1]); })) return;
+    return sendResult(r, err);
   }
 
   // ---- history and events
@@ -501,92 +547,64 @@ void WebApi::dispatch(AsyncWebServerRequest* r) {
 
   // ---- alerts
   if (is(HTTP_GET, {"alerts"})) {
-    std::vector<Alert> alerts;
-    std::vector<PlantProfile> plants;
-    controller_.withEngine([&](Engine& e) {
-      alerts = e.alerts().all();
-      plants = e.plants();
-    });
-    std::sort(alerts.begin(), alerts.end(), [](const Alert& a, const Alert& b) {
-      if (a.active != b.active) return a.active;
-      return (a.active ? a.raisedAt : a.clearedAt) > (b.active ? b.raisedAt : b.clearedAt);
-    });
     JsonDocument doc;
     JsonArray arr = doc["alerts"].to<JsonArray>();
-    for (const auto& a : alerts) {
-      std::string pid;
-      for (const auto& p : plants) {
-        if (a.channel >= 0 && p.channel == a.channel) pid = p.id;
-      }
-      toJson(a, pid, arr.add<JsonObject>());
+    if (!station([&](Station& st) {
+          std::vector<Alert> alerts = st.alerts().all();
+          std::sort(alerts.begin(), alerts.end(), [](const Alert& a, const Alert& b) {
+            if (a.active != b.active) return a.active;
+            return (a.active ? a.raisedAt : a.clearedAt) > (b.active ? b.raisedAt : b.clearedAt);
+          });
+          for (const auto& a : alerts) toJson(a, st.plantIdForChannel(a.channel), arr.add<JsonObject>());
+        })) {
+      return;
     }
     return sendDoc(r, 200, doc);
   }
   if (is(HTTP_POST, {"alerts", "ack-all"})) {
-    controller_.withEngine([](Engine& e) {
-      for (const auto& a : e.alerts().all()) {
-        if (a.active) e.ackAlert(a.id);
-      }
-    });
+    if (!station([](Station& st) { st.ackAll(); })) return;
     return sendOk(r);
   }
   if (is(HTTP_POST, {"alerts", "*", "ack"})) {
     bool found = false;
     const uint32_t id = static_cast<uint32_t>(atol(seg[1].c_str()));
-    controller_.withEngine([&](Engine& e) { found = e.ackAlert(id); });
+    if (!station([&](Station& st) { found = st.ackAlert(id); })) return;
     return found ? sendOk(r) : sendError(r, 404, "not_found");
   }
 
   // ---- settings
   if (is(HTTP_GET, {"settings"})) {
     JsonDocument doc;
-    toJson(controller_.settings(), doc.to<JsonObject>());
+    toJson(hub_.settings(), doc.to<JsonObject>());
     return sendDoc(r, 200, doc);
   }
   if (is(HTTP_PUT, {"settings"})) {
-    Settings s = controller_.settings();
+    Settings s = hub_.settings();
     std::string err;
     if (!fromJson(body.as<JsonObjectConst>(), s, err)) return sendError(r, 400, "invalid", err);
-    err = controller_.saveSettings(s);
+    if (!station([&](Station& st) { err = st.saveSettings(s); })) return;
     if (!err.empty()) return sendError(r, 400, "invalid", err);
     JsonDocument doc;
     toJson(s, doc.to<JsonObject>());
     return sendDoc(r, 200, doc);
   }
 
-  // ---- reservoir
-  if (is(HTTP_POST, {"reservoir", "tare"})) {
-    const std::string err = controller_.tareScale();
-    return err.empty() ? sendOk(r) : sendError(r, 409, "scale", err);
-  }
-  if (is(HTTP_POST, {"reservoir", "calibrate"})) {
-    const std::string err = controller_.calibrateScale(body["ml"] | 0.0f);
-    return err.empty() ? sendOk(r) : sendError(r, 409, "scale", err);
-  }
-  if (is(HTTP_POST, {"reservoir", "refilled"})) {
-    const float ml = body["ml"] | 0.0f;
-    controller_.withEngine([&](Engine& e) { e.noteManualRefill(ml); });
-    return sendOk(r);
-  }
-
   // ---- system
   if (is(HTTP_POST, {"system", "stop"})) {
     const std::string reason = body["reason"] | "stopped from the dashboard";
-    controller_.withEngine([&](Engine& e) { e.emergencyStop(reason); });
+    if (!station([&](Station& st) { st.emergencyStop(reason); })) return;
     return sendOk(r);
   }
   if (is(HTTP_POST, {"system", "resume"})) {
-    std::string err = "busy";
-    controller_.withEngine([&](Engine& e) { err = e.resume(); });
-    return sendResult(r, err);
+    if (!station([](Station& st) { st.resume(); })) return;
+    return sendOk(r);
   }
   if (is(HTTP_POST, {"system", "automation"})) {
     if (!body["enabled"].is<bool>()) return sendError(r, 400, "invalid", "enabled must be true or false");
     const bool enabled = body["enabled"];
-    controller_.withEngine([&](Engine& e) { e.setAutomation(enabled); });
-    Settings s = controller_.settings();
-    s.automationEnabled = enabled;
-    return sendResult(r, controller_.saveSettings(s));
+    std::string err;
+    if (!station([&](Station& st) { err = st.setAutomation(enabled); })) return;
+    return sendResult(r, err);
   }
   if (is(HTTP_POST, {"system", "reboot"})) {
     sendOk(r);
@@ -604,13 +622,13 @@ void WebApi::dispatch(AsyncWebServerRequest* r) {
     JsonDocument doc;
     doc["version"] = PLANTCARE_VERSION;
     doc["exportedAt"] = now;
-    toJson(controller_.settings(), doc["settings"].to<JsonObject>());
+    toJson(hub_.settings(), doc["settings"].to<JsonObject>());
     JsonArray arr = doc["plants"].to<JsonArray>();
-    for (const auto& p : controller_.plants()) toJson(p, arr.add<JsonObject>());
+    for (const auto& p : hub_.plants()) toJson(p, arr.add<JsonObject>());
     return sendDoc(r, 200, doc);
   }
   if (is(HTTP_POST, {"config", "restore"})) {
-    Settings s = controller_.settings();
+    Settings s = hub_.settings();
     std::string err;
     if (!fromJson(body["settings"].as<JsonObjectConst>(), s, err)) return sendError(r, 400, "invalid", "settings: " + err);
     std::vector<PlantProfile> plants;
@@ -619,7 +637,7 @@ void WebApi::dispatch(AsyncWebServerRequest* r) {
       if (!fromJson(o, p, err)) return sendError(r, 400, "invalid", "plant: " + err);
       plants.push_back(p);
     }
-    err = controller_.restoreConfig(s, plants);
+    if (!station([&](Station& st) { err = st.restoreConfig(s, plants); })) return;
     return err.empty() ? sendOk(r) : sendError(r, 400, "invalid", err);
   }
 

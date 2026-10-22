@@ -8,21 +8,21 @@
 #include <string>
 
 class Auth;
-class Controller;
+class Hub;
 class LogStore;
 class Notifier;
 class TimeKeeper;
 class WifiService;
 
-namespace plantcore {
+namespace plantlink {
 struct SystemInfo;
 }
 
 class WebApi {
  public:
-  WebApi(Controller& controller, Auth& auth, WifiService& wifi, LogStore& logs, TimeKeeper& clock, Notifier& notifier)
-      : server_(80), events_("/api/stream"), controller_(controller), auth_(auth), wifi_(wifi), logs_(logs),
-        clock_(clock), notifier_(notifier) {}
+  WebApi(Hub& hub, Auth& auth, WifiService& wifi, LogStore& logs, TimeKeeper& clock, Notifier& notifier)
+      : server_(80), events_("/api/stream"), hub_(hub), auth_(auth), wifi_(wifi), logs_(logs), clock_(clock),
+        notifier_(notifier) {}
 
   void begin();
   void pushStatus();  // network task; no-op without connected clients
@@ -33,7 +33,7 @@ class WebApi {
   void serveStatic(AsyncWebServerRequest* r);
 
  private:
-  plantcore::SystemInfo systemInfo();
+  plantlink::SystemInfo systemInfo();
   bool authorized(AsyncWebServerRequest* r);
   void scheduleReboot(uint32_t delayMs) { rebootAtMs_ = millis() + delayMs; }
   void handleOtaUpload(AsyncWebServerRequest* r, const String& filename, size_t index, uint8_t* data, size_t len,
@@ -42,7 +42,7 @@ class WebApi {
 
   AsyncWebServer server_;
   AsyncEventSource events_;
-  Controller& controller_;
+  Hub& hub_;
   Auth& auth_;
   WifiService& wifi_;
   LogStore& logs_;

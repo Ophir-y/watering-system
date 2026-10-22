@@ -53,60 +53,6 @@ I2cLock::~I2cLock() {
   if (ok_) xSemaphoreGiveRecursive(gBusMutex);
 }
 
-// ------------------------------------------------------------------ ADS1115
-
-bool Ads1115::begin(TwoWire& wire, uint8_t address) {
-  wire_ = &wire;
-  address_ = address;
-  I2cLock lock;
-  present_ = lock.ok() && probe(wire, address);
-  return present_;
-}
-
-bool Ads1115::writeReg(uint8_t reg, uint16_t value) {
-  wire_->beginTransmission(address_);
-  wire_->write(reg);
-  wire_->write(static_cast<uint8_t>(value >> 8));
-  wire_->write(static_cast<uint8_t>(value & 0xFF));
-  return wire_->endTransmission() == 0;
-}
-
-bool Ads1115::readReg(uint8_t reg, uint16_t& value) {
-  wire_->beginTransmission(address_);
-  wire_->write(reg);
-  if (wire_->endTransmission() != 0) return false;
-  if (wire_->requestFrom(static_cast<int>(address_), 2) != 2) return false;
-  value = static_cast<uint16_t>(wire_->read() << 8);
-  value |= static_cast<uint16_t>(wire_->read());
-  return true;
-}
-
-bool Ads1115::read(uint8_t input, int16_t& value) {
-  if (!wire_ || input > 3) return false;
-  I2cLock lock;
-  if (!lock.ok()) return false;
-  // Start a single-shot conversion: AINx vs GND, PGA +-4.096 V, 860 SPS, comparator off.
-  const uint16_t config = 0x8000 | static_cast<uint16_t>((0x4 | input) << 12) | (0x1 << 9) | 0x0100 | (0x7 << 5) | 0x0003;
-  if (!writeReg(0x01, config)) {
-    present_ = false;
-    return false;
-  }
-  for (int i = 0; i < 5; ++i) {
-    delayMicroseconds(1300);
-    uint16_t status = 0;
-    if (!readReg(0x01, status)) break;
-    if (status & 0x8000) {  // conversion done
-      uint16_t raw = 0;
-      if (!readReg(0x00, raw)) break;
-      value = static_cast<int16_t>(raw);
-      present_ = true;
-      return true;
-    }
-  }
-  present_ = false;
-  return false;
-}
-
 // ------------------------------------------------------------------ SHT4x
 
 bool Sht4x::begin(TwoWire& wire, uint8_t address) {

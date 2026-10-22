@@ -1,8 +1,8 @@
 // History on the microSD card, with RAM rings that keep the last day available
 // when the card is missing or failing.
 //
-//   /readings/YYYY-MM-DD.csv   moisture rows (see plantcore/History.h)
-//   /env/YYYY-MM-DD.csv        environment + reservoir rows
+//   /readings/YYYY-MM-DD.csv   moisture, bottle and battery rows per plant (see plantcore/History.h)
+//   /env/YYYY-MM-DD.csv        room climate rows
 //   /events/YYYY-MM.csv        watering, alerts, refills, system events
 //   /daily/YYYY.csv            one moisture summary row per plant per day (long ranges)
 //   /daily/env-YYYY.csv        one environment summary row per day
@@ -39,7 +39,7 @@ class LogStore {
   uint32_t dropped() const { return dropped_; }
 
   // Producers (any task, never block).
-  void reading(int64_t ts, const std::string& plantId, int32_t raw, float pct);
+  void reading(const plantcore::ReadingRow& row);
   void env(const plantcore::EnvRow& row);
   void event(const plantcore::Event& e, const std::string& plantId);
   bool writeBackup(const std::string& json);
@@ -62,6 +62,8 @@ class LogStore {
     char plantId[25];
     int32_t raw;
     float pct;
+    float bottleMl;
+    float batteryMv;
     plantcore::EnvRow env;
     char line[240];
   };
@@ -69,6 +71,7 @@ class LogStore {
     uint32_t ts;
     uint8_t slot;
     int16_t pct10;
+    uint16_t bottleMl;  // 0xFFFF = unknown
   };
   struct RamEnv {
     uint32_t ts;
@@ -85,6 +88,8 @@ class LogStore {
     double sum = 0;
     float min = 0, max = 0;
     uint32_t n = 0;
+    double bottleSum = 0;
+    uint32_t bottleN = 0;
   };
 
   void enqueue(const Item& item);
@@ -116,6 +121,6 @@ class LogStore {
   std::vector<std::pair<std::string, DayAccum>> plantDays_;
   std::string envDate_;
   int64_t envDayTs_ = 0;
-  double envSum_[plantcore::kEnvColumns] = {0, 0, 0, 0};
-  uint32_t envN_[plantcore::kEnvColumns] = {0, 0, 0, 0};
+  double envSum_[plantcore::kEnvColumns] = {};
+  uint32_t envN_[plantcore::kEnvColumns] = {};
 };

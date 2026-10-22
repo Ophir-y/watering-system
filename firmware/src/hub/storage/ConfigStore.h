@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "Fleet.h"
 #include "Types.h"
 
 class ConfigStore {
@@ -17,10 +18,6 @@ class ConfigStore {
     std::string password;
     std::string apPassword;
   };
-  struct ScaleCal {
-    int32_t offset = 0;
-    float countsPerGram = 0;
-  };
 
   bool begin();
 
@@ -28,13 +25,14 @@ class ConfigStore {
   bool saveSettings(const plantcore::Settings& s);
   bool loadPlants(std::vector<plantcore::PlantProfile>& plants);
   bool savePlants(const std::vector<plantcore::PlantProfile>& plants);
-  bool loadState(plantcore::PersistedState& s);
-  bool saveState(const plantcore::PersistedState& s);
+  // Paired plant nodes and their keys.
+  bool loadNodes(std::vector<plantlink::NodeRecord>& nodes);
+  bool saveNodes(const std::vector<plantlink::NodeRecord>& nodes);
+  bool loadStopped();
+  bool saveStopped(bool stopped);
 
   WifiConfig loadWifi();
   bool saveWifi(const WifiConfig& w);
-  ScaleCal loadScale();
-  bool saveScale(const ScaleCal& c);
 
   bool hasPassword();
   bool checkPassword(const std::string& password);

@@ -107,20 +107,24 @@ void LogStore::enqueue(const Item& item) {
   if (!queue_ || xQueueSend(queue_, &item, 0) != pdTRUE) dropped_++;
 }
 
-void LogStore::reading(int64_t ts, const std::string& plantId, int32_t raw, float pct) {
+void LogStore::reading(const plantcore::ReadingRow& row) {
   {
     Lock lock(ram_, 50);
     if (lock.ok()) {
-      ramReadings_.push_back(RamReading{static_cast<uint32_t>(ts), slotFor(plantId), static_cast<int16_t>(pct * 10)});
-      while (ramReadings_.size() > config::kRamReadingsPerPlant * plantcore::kMaxPlants) ramReadings_.pop_front();
+      const uint16_t bottle = row.bottleMl >= 0 ? static_cast<uint16_t>(std::min(row.bottleMl, 65000.0f)) : 0xFFFF;
+      ramReadings_.push_back(RamReading{static_cast<uint32_t>(row.ts), slotFor(row.plantId),
+                                        static_cast<int16_t>(row.pct * 10), bottle});
+      while (ramReadings_.size() > config::kRamReadingsPerPlant * plantcore::kMaxNodes) ramReadings_.pop_front();
     }
   }
   Item item{};
   item.kind = Kind::Reading;
-  item.ts = ts;
-  copyStr(item.plantId, sizeof item.plantId, plantId);
-  item.raw = raw;
-  item.pct = pct;
+  item.ts = row.ts;
+  copyStr(item.plantId, sizeof item.plantId, row.plantId);
+  item.raw = row.raw;
+  item.pct = row.pct;
+  item.bottleMl = row.bottleMl;
+  item.batteryMv = row.batteryMv;
   enqueue(item);
 }
 
@@ -217,7 +221,8 @@ void LogStore::handle(const Item& item) {
       }
       DayAccum& acc = it->second;
       if (acc.n > 0 && acc.date != date) {
-        plantcore::ReadingRow row{acc.ts, it->first, 0, static_cast<float>(acc.sum / acc.n)};
+        plantcore::ReadingRow row{acc.ts, it->first, 0, static_cast<float>(acc.sum / acc.n),
+                                  acc.bottleN ? static_cast<float>(acc.bottleSum / acc.bottleN) : -1.0f, -1.0f};
         append("/daily/" + acc.date.substr(0, 4) + ".csv", plantcore::kReadingsHeader, plantcore::formatReading(row));
         acc = DayAccum{};
       }
@@ -227,7 +232,11 @@ void LogStore::handle(const Item& item) {
       }
       acc.sum += item.pct;
       acc.n++;
-      plantcore::ReadingRow row{item.ts, item.plantId, item.raw, item.pct};
+      if (item.bottleMl >= 0) {
+        acc.bottleSum += item.bottleMl;
+        acc.bottleN++;
+      }
+      plantcore::ReadingRow row{item.ts, item.plantId, item.raw, item.pct, item.bottleMl, item.batteryMv};
       append("/readings/" + date + ".csv", plantcore::kReadingsHeader, plantcore::formatReading(row));
       break;
     }
@@ -301,7 +310,7 @@ std::vector<std::string> LogStore::datesInRange(int64_t from, int64_t to) const 
 
 void LogStore::history(const std::string& plantId, int64_t from, int64_t to, size_t points, JsonObject out) {
   points = std::clamp<size_t>(points, 10, 300);
-  plantcore::Downsampler ds(from, to, points, 1);
+  plantcore::Downsampler ds(from, to, points, 2);  // moisture %, bottle ml
   const bool longRange = to - from > config::kLongRangeDays * 86400LL;
   bool fromCard = false;
   if (sdOk_) {
@@ -311,8 +320,9 @@ void LogStore::history(const std::string& plantId, int64_t from, int64_t to, siz
       auto add = [&](const std::string& line) {
         plantcore::ReadingRow r;
         if (plantcore::parseReading(line, r) && r.plantId == plantId) {
-          bool ok = true;
-          ds.add(r.ts, &r.pct, &ok);
+          const float v[2] = {r.pct, r.bottleMl};
+          const bool ok[2] = {true, r.bottleMl >= 0};
+          ds.add(r.ts, v, ok);
         }
       };
       if (longRange) {
@@ -328,9 +338,9 @@ void LogStore::history(const std::string& plantId, int64_t from, int64_t to, siz
     if (lock.ok()) {
       for (const auto& r : ramReadings_) {
         if (slots_[r.slot] != plantId) continue;
-        float pct = r.pct10 / 10.0f;
-        bool ok = true;
-        ds.add(r.ts, &pct, &ok);
+        const float v[2] = {r.pct10 / 10.0f, static_cast<float>(r.bottleMl)};
+        const bool ok[2] = {true, r.bottleMl != 0xFFFF};
+        ds.add(r.ts, v, ok);
       }
     }
   }

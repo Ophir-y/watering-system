@@ -5,7 +5,7 @@
 #include <string>
 
 #include "Sha256.h"
-#include "Wire.h"
+#include "Frames.h"
 
 using namespace plantlink;
 

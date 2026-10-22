@@ -1,5 +1,5 @@
 // Minimal drivers for the I2C parts. Every wait is bounded, so a disconnected or
-// stuck device produces an error result instead of hanging the control task.
+// stuck device produces an error result instead of hanging a task.
 #pragma once
 
 #include <Arduino.h>
@@ -15,21 +15,6 @@ class I2cLock {
 
  private:
   bool ok_;
-};
-
-class Ads1115 {
- public:
-  bool begin(TwoWire& wire, uint8_t address);
-  bool present() const { return present_; }
-  // Single-ended conversion of AIN0..3 at +-4.096 V full scale (0.125 mV per count).
-  bool read(uint8_t input, int16_t& value);
-
- private:
-  bool writeReg(uint8_t reg, uint16_t value);
-  bool readReg(uint8_t reg, uint16_t& value);
-  TwoWire* wire_ = nullptr;
-  uint8_t address_ = 0;
-  bool present_ = false;
 };
 
 class Sht4x {

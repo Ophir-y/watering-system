@@ -45,7 +45,7 @@ void WifiService::setCredentials(const std::string& ssid, const std::string& pas
 void WifiService::setAp(bool on) {
   if (on == apActive_) return;
   if (on) {
-    WiFi.mode(configured() ? WIFI_AP_STA : WIFI_AP);
+    WiFi.mode(WIFI_AP_STA);  // keep the station interface: ESP-NOW talks to the nodes on it
     WiFi.softAP(apSsid_.c_str(), cfg_.apPassword.c_str());
     dns_.start(53, "*", WiFi.softAPIP());  // captive portal: every name resolves to us
   } else {

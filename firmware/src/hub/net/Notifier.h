@@ -9,13 +9,13 @@
 
 #include "Types.h"
 
-class Controller;
+class Hub;
 class WifiService;
 class TimeKeeper;
 
 class Notifier {
  public:
-  void begin(Controller& controller, WifiService& wifi, TimeKeeper& clock);
+  void begin(Hub& hub, WifiService& wifi, TimeKeeper& clock);
   void loop(uint32_t nowMs);
   void requestTest() { testRequested_ = true; }
   std::string lastTestResult() const;
@@ -25,7 +25,7 @@ class Notifier {
   bool send(const plantcore::NotifyConfig& cfg, const std::string& title, const std::string& message,
             plantcore::Severity severity, std::string& error);
 
-  Controller* controller_ = nullptr;
+  Hub* hub_ = nullptr;
   WifiService* wifi_ = nullptr;
   TimeKeeper* clock_ = nullptr;
   uint32_t lastPollMs_ = 0;

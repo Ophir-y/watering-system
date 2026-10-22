@@ -5,7 +5,7 @@
 
 #include <vector>
 
-#include "../app/Controller.h"
+#include "../app/Hub.h"
 #include "../hal/TimeKeeper.h"
 #include "Alerts.h"
 #include "CaRoots.h"
@@ -16,7 +16,7 @@ using namespace plantcore;
 
 namespace {
 
-// "reservoir_low" -> "Reservoir low" (HTTP header values must stay ASCII).
+// "bottle_low" -> "Bottle low" (HTTP header values must stay ASCII).
 std::string titleFor(const char* code) {
   std::string t = code;
   for (auto& c : t) {
@@ -44,8 +44,8 @@ const char* tagsFor(Severity s) {
 
 }  // namespace
 
-void Notifier::begin(Controller& controller, WifiService& wifi, TimeKeeper& clock) {
-  controller_ = &controller;
+void Notifier::begin(Hub& hub, WifiService& wifi, TimeKeeper& clock) {
+  hub_ = &hub;
   wifi_ = &wifi;
   clock_ = &clock;
   mutex_ = xSemaphoreCreateMutex();
@@ -102,7 +102,7 @@ void Notifier::loop(uint32_t nowMs) {
   if (!test && nowMs - lastPollMs_ < config::kNotifyPollMs) return;
   lastPollMs_ = nowMs;
 
-  const Settings settings = controller_->settings();
+  const Settings settings = hub_->settings();
   const NotifyConfig& cfg = settings.notify;
 
   if (test) {
@@ -128,9 +128,9 @@ void Notifier::loop(uint32_t nowMs) {
   };
   std::vector<Pending> due;
   const int64_t now = clock_->now();
-  controller_->withEngine([&](Engine& e) {
-    for (uint32_t id : e.alerts().dueNotifications(now, static_cast<Severity>(cfg.minSeverity))) {
-      const Alert* a = e.alerts().find(id);
+  hub_->with([&](plantlink::Station& st) {
+    for (uint32_t id : st.alerts().dueNotifications(now, static_cast<Severity>(cfg.minSeverity))) {
+      const Alert* a = st.alerts().find(id);
       if (a) due.push_back({id, a->severity, settings.deviceName + ": " + titleFor(alertCodeName(a->code)), a->message});
     }
   });
@@ -143,7 +143,7 @@ void Notifier::loop(uint32_t nowMs) {
       log_w("Notification failed (%s), retrying in %u s", error.c_str(), backoffMs_ / 1000);
       return;
     }
-    controller_->withEngine([&](Engine& e) { e.alerts().markNotified(p.id, now); });
+    hub_->with([&](plantlink::Station& st) { st.markNotified(p.id); });
   }
   backoffMs_ = 0;
 }
