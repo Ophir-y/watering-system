@@ -8,39 +8,15 @@
 #include <string>
 #include <vector>
 
-#include "Engine.h"
 #include "Types.h"
 
 namespace plantcore {
 
-const char* outletTypeName(OutletType t);
 const char* wateringStyleName(WateringStyle s);
 const char* faultPolicyName(SensorFaultPolicy p);
 const char* sensorHealthName(SensorHealth h);
 const char* eventTypeName(EventType t);
 bool parseEventType(const std::string& s, EventType& out);
-
-// Device/network facts the engine does not know about, filled in by the firmware.
-struct SystemInfo {
-  std::string version;
-  int64_t uptimeS = 0;
-  bool timeValid = false;
-  EpochS now = 0;
-  uint32_t heapFree = 0;
-  std::string resetReason;
-  std::string wifiMode;  // "sta", "ap", "sta+ap", "off"
-  std::string ssid;
-  std::string ip;
-  int rssi = 0;
-  bool apActive = false;
-  std::string apSsid;
-  bool internet = false;
-  bool sdOk = false;
-  float sdUsedMb = 0;
-  float sdTotalMb = 0;
-  bool scaleCalibrated = false;
-  int32_t scaleRaw = 0;
-};
 
 // Plants. fromJson applies only the keys present (partial update), then validates.
 void toJson(const PlantProfile& p, JsonObject out);
@@ -59,6 +35,10 @@ bool fromJson(JsonObjectConst in, PersistedState& s);
 void toJson(const Alert& a, const std::string& plantId, JsonObject out);
 void toJson(const Event& e, const std::string& plantId, JsonObject out);
 
-void statusToJson(const EngineStatus& st, const SystemInfo& sys, const Settings& settings, JsonObject out);
+// What the main station sends a node: the plant profile (without the long texts the
+// node never needs) and the settings that matter for watering.
+void nodeConfigToJson(const Settings& s, const PlantProfile& p, JsonObject out);
+// Applies a node config on top of the given values (partial, then validated).
+bool nodeConfigFromJson(JsonObjectConst in, Settings& s, PlantProfile& p, std::string& err);
 
 }  // namespace plantcore

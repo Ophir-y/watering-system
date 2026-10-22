@@ -1,70 +1,60 @@
-// Runs a single dispense on one outlet.
+// Runs one dose on the node's pump: on for ml / flow seconds, then off.
 //
-// Closed loop (scale available): the outlet closes once the reservoir has lost the
-// requested weight (1 g = 1 ml). After closing, the scale is watched for continued
-// loss, which means a valve stuck open or a siphon.
-// Open loop (no scale): the outlet stays open for ml / calibrated flow.
+// There is no scale: the volume is time x the pump's flow (corrected by what the
+// bottle gauge has learned). The engine stops a dose early when the pump monitor
+// feels the pump run dry, unplugged or jammed.
 #pragma once
 
 #include "Types.h"
 
 namespace plantcore {
 
-class IOutlets {
+class IPump {
  public:
-  virtual ~IOutlets() = default;
-  virtual void open(uint8_t channel) = 0;  // energise actuator rail + this channel
-  virtual void closeAll() = 0;             // de-energise everything
+  virtual ~IPump() = default;
+  virtual void on() = 0;
+  virtual void off() = 0;
 };
 
 struct DoseRequest {
-  uint8_t channel = 0;
   float ml = 0;
-  float flowMlPerS = 1;  // expected flow (already head-compensated for valves)
+  float flowMlPerS = 1;  // expected flow, already corrected by the bottle gauge
   uint32_t maxOnMs = 30000;
-  bool closedLoop = true;
 };
 
-enum class DoseState : uint8_t { Idle, Running, Settling, Watching, Done, Failed };
-enum class DoseFault : uint8_t { None, NoFlow, StuckOpen, ScaleLost, Aborted };
+enum class DoseState : uint8_t { Idle, Running, Done, Failed };
+enum class DoseFault : uint8_t { None, Aborted, PumpDry, PumpDisconnected, PumpJammed };
 
 const char* doseFaultName(DoseFault f);
 
-constexpr float kInflightMl = 2.0f;          // water still in the tube when the outlet closes
-constexpr MonoMs kSettleMs = 4000;
-constexpr MonoMs kWatchMs = 20000;
-constexpr MonoMs kMinNoFlowCheckMs = 4000;
-
 class DoseController {
  public:
-  explicit DoseController(IOutlets& outlets) : outlets_(outlets) {}
+  explicit DoseController(IPump& pump) : pump_(pump) {}
 
-  bool start(const DoseRequest& req, MonoMs now, bool scaleOk, float grams);
-  void tick(MonoMs now, bool scaleOk, float grams);
-  void abort(MonoMs now);
+  bool start(const DoseRequest& req, MonoMs now);
+  void tick(MonoMs now);
+  // Stop with a fault. Water is counted until flowedUntilMs (default: now).
+  void fail(DoseFault f, MonoMs now, MonoMs flowedUntilMs = -1);
+  void abort(MonoMs now) { fail(DoseFault::Aborted, now); }
   void acknowledge();  // Done/Failed -> Idle
 
   DoseState state() const { return state_; }
   DoseFault fault() const { return fault_; }
   bool idle() const { return state_ == DoseState::Idle; }
+  bool running() const { return state_ == DoseState::Running; }
   bool finished() const { return state_ == DoseState::Done || state_ == DoseState::Failed; }
-  bool outletOpen() const { return state_ == DoseState::Running; }
   float dispensedMl() const { return dispensedMl_; }
+  // So far, while running.
+  float dispensedSoFar(MonoMs now) const;
   uint32_t onTimeMs() const { return onTimeMs_; }
   const DoseRequest& request() const { return req_; }
 
  private:
-  void close(MonoMs now);
-  void fail(DoseFault f, MonoMs now);
-
-  IOutlets& outlets_;
+  IPump& pump_;
   DoseRequest req_;
   DoseState state_ = DoseState::Idle;
   DoseFault fault_ = DoseFault::None;
   MonoMs startMs_ = 0;
-  MonoMs phaseMs_ = 0;
-  float baselineG_ = 0;
-  float closedG_ = 0;
   float dispensedMl_ = 0;
   uint32_t onTimeMs_ = 0;
 };

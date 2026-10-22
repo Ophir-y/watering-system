@@ -1,14 +1,17 @@
-// Core data types shared by the control engine, the JSON layer and the firmware.
-// Pure C++17: no Arduino headers, so everything here also builds for host tests.
+// Core data types shared by the control engine, the JSON layer, the radio protocol
+// and the firmware. Pure C++17: no Arduino headers, so everything here also builds
+// for host tests.
+//
+// One plant node runs one Engine for one plant with its own bottle and pump. The
+// main station keeps the profiles, settings, alerts and history for all nodes.
 #pragma once
 
-#include <array>
 #include <cstdint>
 #include <string>
 
 namespace plantcore {
 
-constexpr int kMaxPlants = 8;
+constexpr int kMaxNodes = 16;  // plants (nodes) one main station manages
 
 using EpochS = int64_t;  // wall-clock unix seconds, 0 = unknown
 using MonoMs = int64_t;  // monotonic milliseconds since boot
@@ -20,7 +23,6 @@ struct Range {
 
 // ---------------------------------------------------------------- plants
 
-enum class OutletType : uint8_t { Pump, Valve };
 enum class WateringStyle : uint8_t { EvenlyMoist, DryBetween, SoakAndDry };
 enum class SensorFaultPolicy : uint8_t { Pause, FallbackSchedule };
 
@@ -32,18 +34,23 @@ struct MoistureBand {
   float max = 75;       // above: too wet
 };
 
-// Raw ADS1115 counts at the two calibration points. Capacitive sensors read
-// higher when dry, but either direction is accepted.
+// Raw readings at the two calibration points. Raw values are millivolts x 8 (the
+// scale of the ADS1115 the first board used: 1 count = 0.125 mV). Capacitive sensors
+// read higher when dry, but either direction is accepted.
 struct SensorCalibration {
-  int32_t rawDry = 21000;
-  int32_t rawWet = 10000;
+  int32_t rawDry = 19200;  // ~2.4 V
+  int32_t rawWet = 9600;   // ~1.2 V
 };
 
-struct OutletConfig {
-  OutletType type = OutletType::Pump;
-  float flowMlPerS = 2.0f;     // measured open-loop flow (valves: at calFillPct)
-  float calFillPct = 100.0f;   // valve only: reservoir fill level when flow was measured
-  float dropMm = 300.0f;       // valve only: height of the reservoir outlet (bottle cap) above the drip outlet
+struct PumpConfig {
+  float flowMlPerS = 1.5f;   // measured with the dashboard's "Measure flow" helper
+  bool currentSense = true;  // 1 ohm shunt fitted: feel the pump run dry, unplugged or jammed
+};
+
+struct BottleConfig {
+  float capacityMl = 1500;  // water you pour in to refill it from empty
+  float lowPct = 25;        // "refill soon" below this level
+  float reserveMl = 50;     // the gauge calls the bottle empty below this
 };
 
 struct PlantProfile {
@@ -52,8 +59,9 @@ struct PlantProfile {
   std::string species;
   bool enabled = true;
   bool autoWater = true;  // false: manual watering only
-  uint8_t channel = 0;    // sensor input and outlet index, 0..kMaxPlants-1
-  OutletConfig outlet;
+  std::string node;       // radio node (12 hex digits of its MAC); main station only
+  PumpConfig pump;
+  BottleConfig bottle;
   float potVolumeMl = 2000;
   std::string soil;
   MoistureBand moisture;
@@ -74,13 +82,30 @@ struct PlantProfile {
   std::string careNotes;
 };
 
-// Per-channel learned / bookkeeping state that must survive reboots.
+// Learned / bookkeeping state of the plant that must survive reboots.
 struct PlantRuntime {
   EpochS lastSessionEndS = 0;  // 0 = never
   EpochS lastFallbackS = 0;
   float mlToday = 0;
   float mlPerPct = 0;          // learned ml needed for +1 % moisture, 0 = unknown
-  bool lockedOut = false;      // outlet fault: no automatic or manual watering until cleared
+  bool lockedOut = false;      // pump fault: no automatic or manual watering until cleared
+};
+
+// The bottle's fuel gauge: there is no level sensor, the node counts what it pumps.
+struct BottleState {
+  float ml = -1;                 // estimated water left, -1 = never set (assumed full)
+  float pumpedSinceRefillMl = 0; // at the nominal pump flow, for flow self-calibration
+  bool knownFull = false;        // the last refill was a confirmed fill to capacity
+  float flowFactor = 1;          // learned correction of the pump's nominal flow
+  float usagePerDayMl = 0;       // forecast for "days left"
+  bool empty = false;
+  uint8_t emptyReason = 0;       // EmptyReason
+};
+
+// What the pump's current has taught the node.
+struct PumpLearned {
+  float wetMaPerV = 0;  // normal current per battery volt while pumping water, 0 = unknown
+  uint8_t runs = 0;     // healthy runs averaged into wetMaPerV
 };
 
 // ---------------------------------------------------------------- settings
@@ -88,18 +113,7 @@ struct PlantRuntime {
 struct SafetyLimits {
   float hardMaxPulseMl = 250;
   float hardMaxDailyMlPerPlant = 1500;
-  float hardMaxDailyMlTotal = 5000;
   uint32_t hardMaxOnTimeMs = 120000;
-};
-
-struct ReservoirConfig {
-  bool scaleEnabled = true;
-  bool floatSwitchEnabled = true;
-  float capacityMl = 1800;   // 2 L Coca-Cola bottle with its base cut off
-  float fullHeightMm = 250;  // water depth above the outlet when full (valve head compensation)
-  float lowPct = 20;       // warning below this fill level
-  float emptyMl = 150;     // treated as empty below this (keeps air out of the tubing)
-  float lowDaysLeft = 2;   // warning when the forecast drops below this
 };
 
 struct NotifyConfig {
@@ -112,20 +126,15 @@ struct NotifyConfig {
 
 struct Settings {
   std::string deviceName = "PlantCare";
-  std::string timezone = "UTC0";  // POSIX TZ string used by the device
+  std::string timezone = "UTC0";  // POSIX TZ string used by the main station
   std::string tzName = "UTC";     // IANA name shown in the dashboard
   bool southernHemisphere = false;
   uint8_t waterWindowStartH = 7;
   uint8_t waterWindowEndH = 21;
-  uint8_t quietStartH = 22;       // buzzer silent from..to
-  uint8_t quietEndH = 8;
-  uint16_t sampleIntervalS = 60;
+  uint16_t checkInMin = 5;        // how often each node wakes, reads its soil and reports
   uint16_t logIntervalMin = 10;
   bool automationEnabled = true;
-  bool buzzerEnabled = true;
-  bool leakSensorEnabled = true;
   SafetyLimits limits;
-  ReservoirConfig reservoir;
   NotifyConfig notify;
 };
 
@@ -152,12 +161,11 @@ struct Inputs {
   int localHour = 12;
   int localMonth = 1;   // 1..12
   int32_t localDay = 0; // days since epoch in local time, used for daily limits
-  std::array<MoistureSample, kMaxPlants> moisture{};
-  EnvSnapshot env;
-  bool scaleOk = false;
-  float scaleGrams = 0;   // net water weight (container tared out)
-  bool floatLow = false;
-  bool leak = false;
+  MoistureSample moisture;
+  EnvSnapshot env;      // room climate, relayed by the main station
+  float batteryMv = 0;  // 0 = unknown
+  bool pumpSense = false;  // pumpMa holds a reading taken while the pump runs
+  float pumpMa = 0;
 };
 
 // ---------------------------------------------------------------- outputs
@@ -174,20 +182,21 @@ enum class SessionEnd : uint8_t {
   None, TargetReached, LimitReached, NoResponse, Blocked, DoseFailed, Aborted, Single
 };
 
+enum class EmptyReason : uint8_t { None, Gauge, PumpDry, NoResponse };
+
 enum class Severity : uint8_t { Info = 0, Warning = 1, Critical = 2 };
 
+// Codes are numbered for the radio protocol: append new ones, never reorder.
 enum class AlertCode : uint8_t {
-  ReservoirLow,
-  ReservoirEmpty,
-  ReservoirUnexplainedLoss,
-  FloatScaleDisagree,
-  ScaleFault,
-  LeakDetected,
+  BottleLow,
+  BottleEmpty,
+  PumpDisconnected,
+  PumpJammed,
+  BatteryLow,
+  NodeOffline,
   EmergencyStop,
   SensorFault,
   SensorNoResponse,
-  OutletNoFlow,
-  OutletStuckOpen,
   PlantTooDry,
   PlantTooWet,
   TargetNotReached,
@@ -207,7 +216,7 @@ struct Alert {
   uint32_t id = 0;
   AlertCode code = AlertCode::Count;
   Severity severity = Severity::Info;
-  int8_t channel = -1;  // -1 = system-wide
+  int8_t channel = -1;  // node: 0 = the plant, -1 = the node itself; station: plant slot, -1 = system
   bool active = false;
   bool acked = false;
   EpochS raisedAt = 0;
@@ -222,20 +231,20 @@ struct Event {
   EpochS ts = 0;
   EventType type = EventType::System;
   int8_t channel = -1;
-  std::string code;    // short machine-readable tag, e.g. "auto", "reservoir_low"
+  std::string code;    // short machine-readable tag, e.g. "auto", "bottle_low"
   float ml = 0;
   std::string detail;  // human-readable
+  Severity severity = Severity::Info;  // AlertRaised only
 };
 
-// State persisted across reboots (written at watering boundaries, not continuously).
+// State the node persists across reboots (written at watering boundaries).
 struct PersistedState {
-  std::array<PlantRuntime, kMaxPlants> plants{};
+  PlantRuntime plant;
+  BottleState bottle;
+  PumpLearned pump;
   int32_t day = 0;
-  float mlTodayTotal = 0;
-  float usagePerDayMl = 0;
-  bool emergencyStop = false;
+  bool stopped = false;  // the main station's emergency stop, mirrored
   bool dispenseInProgress = false;
-  uint8_t inProgressChannel = 0;
   float inProgressMl = 0;
 };
 

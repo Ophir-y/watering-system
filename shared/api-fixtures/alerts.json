@@ -2,27 +2,36 @@
   "alerts": [
     {
       "id": 7,
-      "code": "reservoir_low",
+      "code": "bottle_low",
       "severity": "warning",
-      "channel": null,
-      "plantId": null,
+      "plantId": "monstera",
       "active": true,
       "acked": false,
       "raisedAt": 1767250000,
       "clearedAt": null,
-      "message": "The reservoir is low: 900 ml (18%), about 1.9 days left."
+      "message": "Monstera's bottle is low: about 300 ml (20%), about 1.9 days left."
     },
     {
       "id": 5,
       "code": "sensor_fault",
       "severity": "warning",
-      "channel": 1,
       "plantId": "snake-plant",
       "active": false,
       "acked": true,
       "raisedAt": 1767200000,
       "clearedAt": 1767210000,
       "message": "Snake plant: moisture sensor looks disconnected or shorted."
+    },
+    {
+      "id": 3,
+      "code": "time_not_set",
+      "severity": "warning",
+      "plantId": null,
+      "active": false,
+      "acked": false,
+      "raisedAt": 1767190000,
+      "clearedAt": 1767190100,
+      "message": "The clock is not set."
     }
   ]
 }

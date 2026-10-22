@@ -1,7 +1,7 @@
 // CSV row formats for the SD-card logs, and downsampling for chart queries.
 //
-//   readings/YYYY-MM-DD.csv  ts,plant,raw,pct
-//   env/YYYY-MM-DD.csv       ts,tempC,humidityPct,lux,reservoirMl   (empty = no value)
+//   readings/YYYY-MM-DD.csv  ts,plant,raw,pct,bottleMl,batteryMv   (older rows: ts,plant,raw,pct)
+//   env/YYYY-MM-DD.csv       ts,tempC,humidityPct,lux              (empty = no value)
 //   events/YYYY-MM.csv       ts,type,plant,code,ml,"detail"
 #pragma once
 
@@ -14,8 +14,8 @@
 
 namespace plantcore {
 
-constexpr const char* kReadingsHeader = "ts,plant,raw,pct";
-constexpr const char* kEnvHeader = "ts,tempC,humidityPct,lux,reservoirMl";
+constexpr const char* kReadingsHeader = "ts,plant,raw,pct,bottleMl,batteryMv";
+constexpr const char* kEnvHeader = "ts,tempC,humidityPct,lux";
 constexpr const char* kEventsHeader = "ts,type,plant,code,ml,detail";
 
 struct ReadingRow {
@@ -23,13 +23,15 @@ struct ReadingRow {
   std::string plantId;
   int32_t raw = 0;
   float pct = 0;
+  float bottleMl = -1;   // -1 = unknown
+  float batteryMv = -1;  // -1 = unknown
 };
 
-constexpr int kEnvColumns = 4;
+constexpr int kEnvColumns = 3;
 struct EnvRow {
   EpochS ts = 0;
-  float values[kEnvColumns] = {0, 0, 0, 0};  // tempC, humidityPct, lux, reservoirMl
-  bool valid[kEnvColumns] = {false, false, false, false};
+  float values[kEnvColumns] = {0, 0, 0};  // tempC, humidityPct, lux
+  bool valid[kEnvColumns] = {false, false, false};
 };
 
 std::string formatReading(const ReadingRow& r);

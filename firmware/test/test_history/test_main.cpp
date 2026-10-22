@@ -10,16 +10,30 @@ void setUp() {}
 void tearDown() {}
 
 void test_reading_round_trip() {
-  ReadingRow r{1767225600, "monstera-1", 15234, 42.37f};
+  ReadingRow r{1767225600, "monstera-1", 15234, 42.37f, 1210.4f, 4381};
   std::string line = formatReading(r);
-  TEST_ASSERT_EQUAL_STRING("1767225600,monstera-1,15234,42.4", line.c_str());
+  TEST_ASSERT_EQUAL_STRING("1767225600,monstera-1,15234,42.4,1210,4381", line.c_str());
   ReadingRow back;
   TEST_ASSERT_TRUE(parseReading(line, back));
   TEST_ASSERT_EQUAL_INT64(r.ts, back.ts);
   TEST_ASSERT_EQUAL_STRING("monstera-1", back.plantId.c_str());
   TEST_ASSERT_EQUAL_INT32(15234, back.raw);
   TEST_ASSERT_FLOAT_WITHIN(0.01f, 42.4f, back.pct);
+  TEST_ASSERT_EQUAL_FLOAT(1210, back.bottleMl);
+  TEST_ASSERT_EQUAL_FLOAT(4381, back.batteryMv);
   TEST_ASSERT_TRUE(parseReading(line + "\r", back));  // CRLF tolerant
+}
+
+void test_reading_unknown_bottle_and_battery() {
+  ReadingRow r{100, "fern", 15000, 40};
+  TEST_ASSERT_EQUAL_STRING("100,fern,15000,40.0,,", formatReading(r).c_str());
+  ReadingRow back;
+  TEST_ASSERT_TRUE(parseReading(formatReading(r), back));
+  TEST_ASSERT_EQUAL_FLOAT(-1, back.bottleMl);
+  TEST_ASSERT_EQUAL_FLOAT(-1, back.batteryMv);
+  // Rows logged by the single-board build have no bottle or battery columns.
+  TEST_ASSERT_TRUE(parseReading("100,fern,15000,40.0", back));
+  TEST_ASSERT_EQUAL_FLOAT(-1, back.bottleMl);
 }
 
 void test_reading_rejects_garbage() {
@@ -35,16 +49,17 @@ void test_env_with_missing_values() {
   r.ts = 100;
   r.values[0] = 21.5f;
   r.valid[0] = true;
-  r.values[3] = 3200;
-  r.valid[3] = true;
+  r.values[2] = 3200;
+  r.valid[2] = true;
   std::string line = formatEnv(r);
-  TEST_ASSERT_EQUAL_STRING("100,21.5,,,3200.0", line.c_str());
+  TEST_ASSERT_EQUAL_STRING("100,21.5,,3200.0", line.c_str());
   EnvRow back;
   TEST_ASSERT_TRUE(parseEnv(line, back));
   TEST_ASSERT_TRUE(back.valid[0]);
   TEST_ASSERT_FALSE(back.valid[1]);
-  TEST_ASSERT_FALSE(back.valid[2]);
-  TEST_ASSERT_FLOAT_WITHIN(0.01f, 3200, back.values[3]);
+  TEST_ASSERT_TRUE(back.valid[2]);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 3200, back.values[2]);
+  TEST_ASSERT_FALSE(parseEnv("100,21.5", back));
 }
 
 void test_event_quoting() {
@@ -116,6 +131,7 @@ void test_downsampler_skips_empty_buckets() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_reading_round_trip);
+  RUN_TEST(test_reading_unknown_bottle_and_battery);
   RUN_TEST(test_reading_rejects_garbage);
   RUN_TEST(test_env_with_missing_values);
   RUN_TEST(test_event_quoting);

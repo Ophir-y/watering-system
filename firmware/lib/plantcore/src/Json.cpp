@@ -7,11 +7,8 @@
 #include <utility>
 
 #include "Alerts.h"
-#include "SensorMonitor.h"
 
 namespace plantcore {
-
-const char* outletTypeName(OutletType t) { return t == OutletType::Valve ? "valve" : "pump"; }
 
 const char* wateringStyleName(WateringStyle s) {
   switch (s) {
@@ -146,6 +143,14 @@ bool validId(const std::string& id) {
   return true;
 }
 
+bool validNodeId(const std::string& id) {
+  if (id.size() != 12) return false;
+  for (char c : id) {
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+  }
+  return true;
+}
+
 bool between(double v, double lo, double hi) { return v >= lo && v <= hi; }
 
 bool fail(std::string& err, const char* msg) {
@@ -165,12 +170,18 @@ void toJson(const PlantProfile& p, JsonObject o) {
   o["species"] = p.species;
   o["enabled"] = p.enabled;
   o["autoWater"] = p.autoWater;
-  o["channel"] = p.channel;
-  JsonObject outlet = o["outlet"].to<JsonObject>();
-  outlet["type"] = outletTypeName(p.outlet.type);
-  outlet["flowMlPerS"] = r2(p.outlet.flowMlPerS);
-  outlet["calFillPct"] = r1(p.outlet.calFillPct);
-  outlet["dropMm"] = r1(p.outlet.dropMm);
+  if (!p.node.empty()) {
+    o["node"] = p.node;
+  } else {
+    o["node"] = nullptr;
+  }
+  JsonObject pump = o["pump"].to<JsonObject>();
+  pump["flowMlPerS"] = r2(p.pump.flowMlPerS);
+  pump["currentSense"] = p.pump.currentSense;
+  JsonObject bottle = o["bottle"].to<JsonObject>();
+  bottle["capacityMl"] = r1(p.bottle.capacityMl);
+  bottle["lowPct"] = r1(p.bottle.lowPct);
+  bottle["reserveMl"] = r1(p.bottle.reserveMl);
   o["potVolumeMl"] = r1(p.potVolumeMl);
   o["soil"] = p.soil;
   JsonObject m = o["moisture"].to<JsonObject>();
@@ -208,13 +219,21 @@ bool fromJson(JsonObjectConst o, PlantProfile& p, std::string& err) {
   r.str(o, "species", p.species, 60);
   r.boolean(o, "enabled", p.enabled);
   r.boolean(o, "autoWater", p.autoWater);
-  r.num(o, "channel", p.channel);
-  JsonObjectConst outlet = o["outlet"];
-  if (!outlet.isNull()) {
-    r.enumeration(outlet, "type", p.outlet.type, {{"pump", OutletType::Pump}, {"valve", OutletType::Valve}});
-    r.num(outlet, "flowMlPerS", p.outlet.flowMlPerS);
-    r.num(outlet, "calFillPct", p.outlet.calFillPct);
-    r.num(outlet, "dropMm", p.outlet.dropMm);
+  // "node": null unlinks the plant from its node.
+  for (JsonPairConst kv : o) {
+    if (kv.key() == "node" && kv.value().isNull()) p.node.clear();
+  }
+  r.str(o, "node", p.node, 12);
+  JsonObjectConst pump = o["pump"];
+  if (!pump.isNull()) {
+    r.num(pump, "flowMlPerS", p.pump.flowMlPerS);
+    r.boolean(pump, "currentSense", p.pump.currentSense);
+  }
+  JsonObjectConst bottle = o["bottle"];
+  if (!bottle.isNull()) {
+    r.num(bottle, "capacityMl", p.bottle.capacityMl);
+    r.num(bottle, "lowPct", p.bottle.lowPct);
+    r.num(bottle, "reserveMl", p.bottle.reserveMl);
   }
   r.num(o, "potVolumeMl", p.potVolumeMl);
   r.str(o, "soil", p.soil, 120);
@@ -271,10 +290,13 @@ bool fromJson(JsonObjectConst o, PlantProfile& p, std::string& err) {
 bool validateProfile(const PlantProfile& p, std::string& err) {
   if (!validId(p.id)) return fail(err, "id must be 1-24 characters: a-z, 0-9, - or _");
   if (p.name.empty()) return fail(err, "name is required");
-  if (p.channel >= kMaxPlants) return fail(err, "channel must be 0-7");
-  if (!between(p.outlet.flowMlPerS, 0.05, 100)) return fail(err, "outlet.flowMlPerS must be 0.05-100");
-  if (!between(p.outlet.calFillPct, 0, 100)) return fail(err, "outlet.calFillPct must be 0-100");
-  if (!between(p.outlet.dropMm, 0, 5000)) return fail(err, "outlet.dropMm must be 0-5000");
+  if (!p.node.empty() && !validNodeId(p.node)) return fail(err, "node must be 12 hex digits");
+  if (!between(p.pump.flowMlPerS, 0.05, 100)) return fail(err, "pump.flowMlPerS must be 0.05-100");
+  if (!between(p.bottle.capacityMl, 100, 20000)) return fail(err, "bottle.capacityMl must be 100-20000");
+  if (!between(p.bottle.lowPct, 0, 90)) return fail(err, "bottle.lowPct must be 0-90");
+  if (!(p.bottle.reserveMl >= 0 && p.bottle.reserveMl < p.bottle.capacityMl / 2)) {
+    return fail(err, "bottle.reserveMl must be below half the capacity");
+  }
   if (!between(p.potVolumeMl, 50, 100000)) return fail(err, "potVolumeMl must be 50-100000");
   const MoistureBand& m = p.moisture;
   if (!(m.critical >= 0 && m.critical < m.min && m.min < m.target && m.target < m.max && m.max <= 100)) {
@@ -312,27 +334,13 @@ void toJson(const Settings& s, JsonObject o) {
   JsonObject w = o["waterWindow"].to<JsonObject>();
   w["startH"] = s.waterWindowStartH;
   w["endH"] = s.waterWindowEndH;
-  JsonObject q = o["quietHours"].to<JsonObject>();
-  q["startH"] = s.quietStartH;
-  q["endH"] = s.quietEndH;
-  o["sampleIntervalS"] = s.sampleIntervalS;
+  o["checkInMin"] = s.checkInMin;
   o["logIntervalMin"] = s.logIntervalMin;
   o["automationEnabled"] = s.automationEnabled;
-  o["buzzerEnabled"] = s.buzzerEnabled;
-  o["leakSensorEnabled"] = s.leakSensorEnabled;
   JsonObject l = o["limits"].to<JsonObject>();
   l["hardMaxPulseMl"] = r1(s.limits.hardMaxPulseMl);
   l["hardMaxDailyMlPerPlant"] = r1(s.limits.hardMaxDailyMlPerPlant);
-  l["hardMaxDailyMlTotal"] = r1(s.limits.hardMaxDailyMlTotal);
   l["hardMaxOnTimeS"] = s.limits.hardMaxOnTimeMs / 1000;
-  JsonObject res = o["reservoir"].to<JsonObject>();
-  res["scaleEnabled"] = s.reservoir.scaleEnabled;
-  res["floatSwitchEnabled"] = s.reservoir.floatSwitchEnabled;
-  res["capacityMl"] = r1(s.reservoir.capacityMl);
-  res["fullHeightMm"] = r1(s.reservoir.fullHeightMm);
-  res["lowPct"] = r1(s.reservoir.lowPct);
-  res["emptyMl"] = r1(s.reservoir.emptyMl);
-  res["lowDaysLeft"] = r1(s.reservoir.lowDaysLeft);
   JsonObject n = o["notify"].to<JsonObject>();
   n["enabled"] = s.notify.enabled;
   n["server"] = s.notify.server;
@@ -353,34 +361,16 @@ bool fromJson(JsonObjectConst o, Settings& s, std::string& err) {
     r.num(w, "startH", s.waterWindowStartH);
     r.num(w, "endH", s.waterWindowEndH);
   }
-  JsonObjectConst q = o["quietHours"];
-  if (!q.isNull()) {
-    r.num(q, "startH", s.quietStartH);
-    r.num(q, "endH", s.quietEndH);
-  }
-  r.num(o, "sampleIntervalS", s.sampleIntervalS);
+  r.num(o, "checkInMin", s.checkInMin);
   r.num(o, "logIntervalMin", s.logIntervalMin);
   r.boolean(o, "automationEnabled", s.automationEnabled);
-  r.boolean(o, "buzzerEnabled", s.buzzerEnabled);
-  r.boolean(o, "leakSensorEnabled", s.leakSensorEnabled);
   JsonObjectConst l = o["limits"];
   if (!l.isNull()) {
     r.num(l, "hardMaxPulseMl", s.limits.hardMaxPulseMl);
     r.num(l, "hardMaxDailyMlPerPlant", s.limits.hardMaxDailyMlPerPlant);
-    r.num(l, "hardMaxDailyMlTotal", s.limits.hardMaxDailyMlTotal);
     uint32_t onS = s.limits.hardMaxOnTimeMs / 1000;
     r.num(l, "hardMaxOnTimeS", onS);
     s.limits.hardMaxOnTimeMs = onS * 1000;
-  }
-  JsonObjectConst res = o["reservoir"];
-  if (!res.isNull()) {
-    r.boolean(res, "scaleEnabled", s.reservoir.scaleEnabled);
-    r.boolean(res, "floatSwitchEnabled", s.reservoir.floatSwitchEnabled);
-    r.num(res, "capacityMl", s.reservoir.capacityMl);
-    r.num(res, "fullHeightMm", s.reservoir.fullHeightMm);
-    r.num(res, "lowPct", s.reservoir.lowPct);
-    r.num(res, "emptyMl", s.reservoir.emptyMl);
-    r.num(res, "lowDaysLeft", s.reservoir.lowDaysLeft);
   }
   JsonObjectConst n = o["notify"];
   if (!n.isNull()) {
@@ -399,21 +389,13 @@ bool validateSettings(const Settings& s, std::string& err) {
   if (s.deviceName.empty()) return fail(err, "deviceName is required");
   if (s.timezone.empty()) return fail(err, "timezone is required");
   if (s.waterWindowStartH > 23 || s.waterWindowEndH > 23) return fail(err, "waterWindow hours must be 0-23");
-  if (s.quietStartH > 23 || s.quietEndH > 23) return fail(err, "quietHours hours must be 0-23");
-  if (!between(s.sampleIntervalS, 10, 3600)) return fail(err, "sampleIntervalS must be 10-3600");
+  if (!between(s.checkInMin, 1, 60)) return fail(err, "checkInMin must be 1-60");
   if (!between(s.logIntervalMin, 1, 60)) return fail(err, "logIntervalMin must be 1-60");
   if (!between(s.limits.hardMaxPulseMl, 5, 2000)) return fail(err, "limits.hardMaxPulseMl must be 5-2000");
   if (!between(s.limits.hardMaxDailyMlPerPlant, 10, 20000)) {
     return fail(err, "limits.hardMaxDailyMlPerPlant must be 10-20000");
   }
-  if (!between(s.limits.hardMaxDailyMlTotal, 10, 100000)) return fail(err, "limits.hardMaxDailyMlTotal must be 10-100000");
   if (!between(s.limits.hardMaxOnTimeMs, 5000, 600000)) return fail(err, "limits.hardMaxOnTimeS must be 5-600");
-  const ReservoirConfig& res = s.reservoir;
-  if (!between(res.capacityMl, 100, 200000)) return fail(err, "reservoir.capacityMl must be 100-200000");
-  if (!between(res.fullHeightMm, 10, 2000)) return fail(err, "reservoir.fullHeightMm must be 10-2000");
-  if (!between(res.lowPct, 0, 90)) return fail(err, "reservoir.lowPct must be 0-90");
-  if (!(res.emptyMl >= 0 && res.emptyMl < res.capacityMl)) return fail(err, "reservoir.emptyMl must be below capacity");
-  if (!between(res.lowDaysLeft, 0, 30)) return fail(err, "reservoir.lowDaysLeft must be 0-30");
   const NotifyConfig& n = s.notify;
   if (n.server.rfind("https://", 0) != 0 && n.server.rfind("http://", 0) != 0) {
     return fail(err, "notify.server must start with http:// or https://");
@@ -429,50 +411,55 @@ bool validateSettings(const Settings& s, std::string& err) {
 // ------------------------------------------------------------------ persisted state
 
 void toJson(const PersistedState& s, JsonObject o) {
-  o["v"] = 1;
+  o["v"] = 2;
   o["day"] = s.day;
-  o["mlTodayTotal"] = r1(s.mlTodayTotal);
-  o["usagePerDayMl"] = r1(s.usagePerDayMl);
-  o["estop"] = s.emergencyStop;
-  if (s.dispenseInProgress) {
-    JsonObject ip = o["inProgress"].to<JsonObject>();
-    ip["ch"] = s.inProgressChannel;
-    ip["ml"] = r1(s.inProgressMl);
-  }
-  JsonArray plants = o["plants"].to<JsonArray>();
-  for (const auto& rt : s.plants) {
-    JsonObject p = plants.add<JsonObject>();
-    p["last"] = rt.lastSessionEndS;
-    p["lastFb"] = rt.lastFallbackS;
-    p["mlToday"] = r1(rt.mlToday);
-    p["mlPerPct"] = r2(rt.mlPerPct);
-    p["locked"] = rt.lockedOut;
-  }
+  o["stopped"] = s.stopped;
+  if (s.dispenseInProgress) o["inProgressMl"] = r1(s.inProgressMl);
+  JsonObject p = o["plant"].to<JsonObject>();
+  p["last"] = s.plant.lastSessionEndS;
+  p["lastFb"] = s.plant.lastFallbackS;
+  p["mlToday"] = r1(s.plant.mlToday);
+  p["mlPerPct"] = r2(s.plant.mlPerPct);
+  p["locked"] = s.plant.lockedOut;
+  JsonObject b = o["bottle"].to<JsonObject>();
+  b["ml"] = r1(s.bottle.ml);
+  b["pumped"] = r1(s.bottle.pumpedSinceRefillMl);
+  b["full"] = s.bottle.knownFull;
+  b["flow"] = std::round(s.bottle.flowFactor * 1000.0) / 1000.0;
+  b["usage"] = r1(s.bottle.usagePerDayMl);
+  b["empty"] = s.bottle.empty;
+  b["why"] = s.bottle.emptyReason;
+  JsonObject pu = o["pump"].to<JsonObject>();
+  pu["wet"] = r2(s.pump.wetMaPerV);
+  pu["runs"] = s.pump.runs;
 }
 
 bool fromJson(JsonObjectConst o, PersistedState& s) {
-  if (o.isNull() || o["v"].as<int>() != 1) return false;
+  if (o.isNull() || o["v"].as<int>() != 2) return false;
   s = PersistedState{};
   s.day = o["day"].as<int32_t>();
-  s.mlTodayTotal = o["mlTodayTotal"].as<float>();
-  s.usagePerDayMl = o["usagePerDayMl"].as<float>();
-  s.emergencyStop = o["estop"].as<bool>();
-  JsonObjectConst ip = o["inProgress"];
-  if (!ip.isNull()) {
+  s.stopped = o["stopped"].as<bool>();
+  if (o["inProgressMl"].is<float>()) {
     s.dispenseInProgress = true;
-    s.inProgressChannel = ip["ch"].as<uint8_t>();
-    s.inProgressMl = ip["ml"].as<float>();
+    s.inProgressMl = o["inProgressMl"].as<float>();
   }
-  size_t i = 0;
-  for (JsonObjectConst p : o["plants"].as<JsonArrayConst>()) {
-    if (i >= s.plants.size()) break;
-    PlantRuntime& rt = s.plants[i++];
-    rt.lastSessionEndS = p["last"].as<int64_t>();
-    rt.lastFallbackS = p["lastFb"].as<int64_t>();
-    rt.mlToday = p["mlToday"].as<float>();
-    rt.mlPerPct = p["mlPerPct"].as<float>();
-    rt.lockedOut = p["locked"].as<bool>();
-  }
+  JsonObjectConst p = o["plant"];
+  s.plant.lastSessionEndS = p["last"].as<int64_t>();
+  s.plant.lastFallbackS = p["lastFb"].as<int64_t>();
+  s.plant.mlToday = p["mlToday"].as<float>();
+  s.plant.mlPerPct = p["mlPerPct"].as<float>();
+  s.plant.lockedOut = p["locked"].as<bool>();
+  JsonObjectConst b = o["bottle"];
+  s.bottle.ml = b["ml"] | -1.0f;
+  s.bottle.pumpedSinceRefillMl = b["pumped"].as<float>();
+  s.bottle.knownFull = b["full"].as<bool>();
+  s.bottle.flowFactor = b["flow"] | 1.0f;
+  s.bottle.usagePerDayMl = b["usage"].as<float>();
+  s.bottle.empty = b["empty"].as<bool>();
+  s.bottle.emptyReason = b["why"].as<uint8_t>();
+  JsonObjectConst pu = o["pump"];
+  s.pump.wetMaPerV = pu["wet"].as<float>();
+  s.pump.runs = pu["runs"].as<uint8_t>();
   return true;
 }
 
@@ -482,11 +469,6 @@ void toJson(const Alert& a, const std::string& plantId, JsonObject o) {
   o["id"] = a.id;
   o["code"] = alertCodeName(a.code);
   o["severity"] = severityName(a.severity);
-  if (a.channel >= 0) {
-    o["channel"] = a.channel;
-  } else {
-    o["channel"] = nullptr;
-  }
   if (!plantId.empty()) {
     o["plantId"] = plantId;
   } else {
@@ -516,139 +498,37 @@ void toJson(const Event& e, const std::string& plantId, JsonObject o) {
   o["detail"] = e.detail;
 }
 
-// ------------------------------------------------------------------ status
+// ------------------------------------------------------------------ node config
 
-void statusToJson(const EngineStatus& st, const SystemInfo& sys, const Settings& settings, JsonObject o) {
-  JsonObject dev = o["device"].to<JsonObject>();
-  dev["name"] = settings.deviceName;
-  dev["version"] = sys.version;
-  dev["uptimeS"] = sys.uptimeS;
-  dev["timeValid"] = sys.timeValid;
-  if (sys.timeValid) {
-    dev["now"] = sys.now;
-  } else {
-    dev["now"] = nullptr;
-  }
-  dev["tzName"] = settings.tzName;
-  dev["heapFree"] = sys.heapFree;
-  dev["resetReason"] = sys.resetReason;
+void nodeConfigToJson(const Settings& s, const PlantProfile& p, JsonObject o) {
+  JsonObject plant = o["plant"].to<JsonObject>();
+  toJson(p, plant);
+  plant.remove("careNotes");
+  plant.remove("soil");
+  plant.remove("species");
+  plant.remove("node");
+  JsonObject set = o["settings"].to<JsonObject>();
+  set["southernHemisphere"] = s.southernHemisphere;
+  JsonObject w = set["waterWindow"].to<JsonObject>();
+  w["startH"] = s.waterWindowStartH;
+  w["endH"] = s.waterWindowEndH;
+  set["checkInMin"] = s.checkInMin;
+  set["automationEnabled"] = s.automationEnabled;
+  JsonObject l = set["limits"].to<JsonObject>();
+  l["hardMaxPulseMl"] = r1(s.limits.hardMaxPulseMl);
+  l["hardMaxDailyMlPerPlant"] = r1(s.limits.hardMaxDailyMlPerPlant);
+  l["hardMaxOnTimeS"] = s.limits.hardMaxOnTimeMs / 1000;
+}
 
-  JsonObject net = o["network"].to<JsonObject>();
-  net["mode"] = sys.wifiMode;
-  net["ssid"] = sys.ssid;
-  net["ip"] = sys.ip;
-  net["rssi"] = sys.rssi;
-  net["apActive"] = sys.apActive;
-  net["apSsid"] = sys.apSsid;
-  net["internet"] = sys.internet;
-
-  JsonObject sto = o["storage"].to<JsonObject>();
-  sto["sdOk"] = sys.sdOk;
-  sto["sdUsedMb"] = r1(sys.sdUsedMb);
-  sto["sdTotalMb"] = r1(sys.sdTotalMb);
-
-  JsonObject aut = o["automation"].to<JsonObject>();
-  aut["enabled"] = st.automationEnabled;
-  aut["emergencyStop"] = st.emergencyStop;
-  o["leak"] = st.leak;
-
-  JsonObject res = o["reservoir"].to<JsonObject>();
-  res["scaleValid"] = st.reservoir.scaleValid;
-  if (st.reservoir.scaleValid) {
-    res["ml"] = r1(st.reservoir.ml);
-    res["pct"] = r1(st.reservoir.pct);
-  } else {
-    res["ml"] = nullptr;
-    res["pct"] = nullptr;
-  }
-  res["capacityMl"] = r1(settings.reservoir.capacityMl);
-  if (st.reservoir.daysLeft >= 0) {
-    res["daysLeft"] = r1(st.reservoir.daysLeft);
-  } else {
-    res["daysLeft"] = nullptr;
-  }
-  res["low"] = st.reservoir.low;
-  res["empty"] = st.reservoir.empty;
-  res["floatLow"] = st.reservoir.floatLow;
-  res["scaleCalibrated"] = sys.scaleCalibrated;
-  res["scaleRaw"] = sys.scaleRaw;
-
-  JsonObject env = o["environment"].to<JsonObject>();
-  env["valid"] = st.env.valid;
-  if (st.env.valid) {
-    env["tempC"] = r1(st.env.tempC);
-    env["humidityPct"] = r1(st.env.humidityPct);
-    env["vpdKPa"] = r2(st.vpdKPa);
-  } else {
-    env["tempC"] = nullptr;
-    env["humidityPct"] = nullptr;
-    env["vpdKPa"] = nullptr;
-  }
-  if (st.env.luxValid) {
-    env["lux"] = r1(st.env.lux);
-  } else {
-    env["lux"] = nullptr;
-  }
-
-  if (st.dose.active) {
-    JsonObject d = o["dose"].to<JsonObject>();
-    d["plantId"] = st.dose.plantId;
-    d["channel"] = st.dose.channel;
-    d["kind"] = sessionKindName(st.dose.kind);
-    d["ml"] = r1(st.dose.ml);
-    d["dispensedMl"] = r1(st.dose.dispensedMl);
-  } else {
-    o["dose"] = nullptr;
-  }
-  if (st.lastDose.valid) {
-    JsonObject d = o["lastDose"].to<JsonObject>();
-    d["plantId"] = st.lastDose.plantId;
-    d["channel"] = st.lastDose.channel;
-    d["ml"] = r1(st.lastDose.ml);
-    d["onTimeMs"] = st.lastDose.onTimeMs;
-    d["closedLoop"] = st.lastDose.closedLoop;
-    d["at"] = st.lastDose.at;
-  } else {
-    o["lastDose"] = nullptr;
-  }
-  o["mlTodayTotal"] = r1(st.mlTodayTotal);
-
-  JsonArray plants = o["plants"].to<JsonArray>();
-  for (const auto& p : st.plants) {
-    JsonObject j = plants.add<JsonObject>();
-    j["id"] = p.id;
-    j["name"] = p.name;
-    j["channel"] = p.channel;
-    if (p.haveMoisture) {
-      j["moisturePct"] = r1(p.moisturePct);
-    } else {
-      j["moisturePct"] = nullptr;
-    }
-    j["raw"] = p.raw;
-    j["sensor"] = sensorHealthName(p.health);
-    j["issue"] = sensorIssueName(p.issue);
-    j["state"] = plannerStateName(p.planner);
-    j["triggerPct"] = r1(p.triggerPct);
-    j["targetPct"] = r1(p.targetPct);
-    j["mlToday"] = r1(p.mlToday);
-    if (p.lastWateredAt > 0) {
-      j["lastWateredAt"] = p.lastWateredAt;
-    } else {
-      j["lastWateredAt"] = nullptr;
-    }
-    j["lockedOut"] = p.lockedOut;
-    if (p.mlPerPct > 0) {
-      j["mlPerPct"] = r2(p.mlPerPct);
-    } else {
-      j["mlPerPct"] = nullptr;
-    }
-    j["soakRemainingS"] = static_cast<int64_t>(p.soakRemainingMs / 1000);
-  }
-
-  JsonObject al = o["alerts"].to<JsonObject>();
-  al["critical"] = st.alertsCritical;
-  al["warning"] = st.alertsWarning;
-  al["info"] = st.alertsInfo;
+bool nodeConfigFromJson(JsonObjectConst o, Settings& s, PlantProfile& p, std::string& err) {
+  if (o["plant"].isNull() || o["settings"].isNull()) return fail(err, "plant and settings are required");
+  Settings ns = s;
+  PlantProfile np = p;
+  if (!fromJson(o["settings"].as<JsonObjectConst>(), ns, err)) return false;
+  if (!fromJson(o["plant"].as<JsonObjectConst>(), np, err)) return false;
+  s = ns;
+  p = np;
+  return true;
 }
 
 }  // namespace plantcore

@@ -85,15 +85,16 @@ std::string num1(float v) {
 }  // namespace
 
 std::string formatReading(const ReadingRow& r) {
-  char buf[96];
-  snprintf(buf, sizeof buf, "%lld,%s,%ld,%.1f", static_cast<long long>(r.ts), r.plantId.c_str(),
-           static_cast<long>(r.raw), r.pct);
-  return buf;
+  std::string out = std::to_string(r.ts) + ',' + r.plantId + ',' + std::to_string(r.raw) + ',' + num1(r.pct) + ',';
+  if (r.bottleMl >= 0) out += std::to_string(static_cast<long>(std::lround(r.bottleMl)));
+  out += ',';
+  if (r.batteryMv >= 0) out += std::to_string(static_cast<long>(std::lround(r.batteryMv)));
+  return out;
 }
 
 bool parseReading(const std::string& line, ReadingRow& r) {
   auto f = splitCsv(line);
-  if (f.size() != 4) return false;
+  if (f.size() != 4 && f.size() != 6) return false;
   int64_t ts = 0, raw = 0;
   float pct = 0;
   if (!parseInt64(f[0], ts) || f[1].empty() || !parseInt64(f[2], raw) || !parseFloat(f[3], pct)) return false;
@@ -101,6 +102,11 @@ bool parseReading(const std::string& line, ReadingRow& r) {
   r.plantId = f[1];
   r.raw = static_cast<int32_t>(raw);
   r.pct = pct;
+  r.bottleMl = r.batteryMv = -1;
+  if (f.size() == 6) {
+    if (!parseFloat(f[4], r.bottleMl)) r.bottleMl = -1;
+    if (!parseFloat(f[5], r.batteryMv)) r.batteryMv = -1;
+  }
   return true;
 }
 
@@ -115,7 +121,8 @@ std::string formatEnv(const EnvRow& r) {
 
 bool parseEnv(const std::string& line, EnvRow& r) {
   auto f = splitCsv(line);
-  if (f.size() != 1 + kEnvColumns) return false;
+  // Rows from the single-board build carry a fifth column (reservoir ml): ignored.
+  if (f.size() != 1 + kEnvColumns && f.size() != 2 + kEnvColumns) return false;
   int64_t ts = 0;
   if (!parseInt64(f[0], ts)) return false;
   r.ts = ts;

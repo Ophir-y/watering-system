@@ -11,6 +11,7 @@
 namespace plantcore {
 
 const char* alertCodeName(AlertCode code);
+bool parseAlertCode(const std::string& name, AlertCode& out);
 const char* severityName(Severity s);
 
 // How often an unacknowledged alert is pushed again (0 = never).

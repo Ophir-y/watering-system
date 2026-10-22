@@ -8,10 +8,9 @@ const char* blockReasonName(BlockReason r) {
   switch (r) {
     case BlockReason::None: return "none";
     case BlockReason::InvalidAmount: return "invalid_amount";
-    case BlockReason::Leak: return "leak";
     case BlockReason::EmergencyStop: return "emergency_stop";
-    case BlockReason::ReservoirEmpty: return "reservoir_empty";
-    case BlockReason::OutletBusy: return "outlet_busy";
+    case BlockReason::BottleEmpty: return "bottle_empty";
+    case BlockReason::BatteryLow: return "battery_low";
     case BlockReason::Lockout: return "lockout";
     case BlockReason::PlantDisabled: return "plant_disabled";
     case BlockReason::AutomationPaused: return "automation_paused";
@@ -19,7 +18,6 @@ const char* blockReasonName(BlockReason r) {
     case BlockReason::SensorFault: return "sensor_fault";
     case BlockReason::MinInterval: return "min_interval";
     case BlockReason::PlantDailyLimit: return "plant_daily_limit";
-    case BlockReason::TotalDailyLimit: return "total_daily_limit";
   }
   return "unknown";
 }
@@ -28,20 +26,19 @@ namespace {
 Verdict block(BlockReason r) { return Verdict{false, r, 0}; }
 }  // namespace
 
-Verdict evaluateDispense(const SafetyLimits& limits, const GlobalState& global, const PlantProfile& plant,
+Verdict evaluateDispense(const SafetyLimits& limits, const NodeState& node, const PlantProfile& plant,
                          const PlantRuntime& runtime, SensorHealth sensor, const DispenseRequest& req) {
   if (!(req.ml > 0)) return block(BlockReason::InvalidAmount);
-  // Interlocks that apply to every kind of dispense.
-  if (global.leak) return block(BlockReason::Leak);
-  if (global.emergencyStop) return block(BlockReason::EmergencyStop);
-  if (global.reservoirEmpty) return block(BlockReason::ReservoirEmpty);
-  if (global.outletActive) return block(BlockReason::OutletBusy);
+  // Interlocks that apply to every kind of dose.
+  if (node.emergencyStop) return block(BlockReason::EmergencyStop);
+  if (node.bottleEmpty) return block(BlockReason::BottleEmpty);
+  if (node.batteryCritical) return block(BlockReason::BatteryLow);
   if (runtime.lockedOut) return block(BlockReason::Lockout);
   if (!plant.enabled) return block(BlockReason::PlantDisabled);
 
   const bool manual = req.kind == SessionKind::Manual;
   if (!manual) {
-    if (!global.automationEnabled) return block(BlockReason::AutomationPaused);
+    if (!node.automationEnabled) return block(BlockReason::AutomationPaused);
     if (!plant.autoWater) return block(BlockReason::ManualOnly);
     if (req.kind == SessionKind::Auto && sensor == SensorHealth::Failed) return block(BlockReason::SensorFault);
     if (!req.continuation && req.secondsSinceLastSession < plant.minIntervalH * 3600.0f) {
@@ -57,11 +54,9 @@ Verdict evaluateDispense(const SafetyLimits& limits, const GlobalState& global, 
   }
 
   float ml = std::min(req.ml, pulseCap);
-  float plantRemaining = plantDailyCap - runtime.mlToday;
-  float totalRemaining = limits.hardMaxDailyMlTotal - global.mlTodayTotal;
+  const float plantRemaining = plantDailyCap - runtime.mlToday;
   if (plantRemaining < kMinDoseMl) return block(BlockReason::PlantDailyLimit);
-  if (totalRemaining < kMinDoseMl) return block(BlockReason::TotalDailyLimit);
-  ml = std::min({ml, plantRemaining, totalRemaining});
+  ml = std::min(ml, plantRemaining);
   if (ml < kMinDoseMl) return block(BlockReason::InvalidAmount);
   return Verdict{true, BlockReason::None, ml};
 }

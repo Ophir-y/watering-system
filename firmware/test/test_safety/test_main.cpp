@@ -25,7 +25,7 @@ static DispenseRequest autoReq(float ml, float sinceS = 1e9f) {
   return r;
 }
 
-static Verdict eval(const GlobalState& g, const PlantRuntime& rt, const DispenseRequest& r,
+static Verdict eval(const NodeState& g, const PlantRuntime& rt, const DispenseRequest& r,
                     SensorHealth h = SensorHealth::Ok, PlantProfile p = plant()) {
   return evaluateDispense(limits(), g, p, rt, h, r);
 }
@@ -40,25 +40,22 @@ void test_interlocks_block_everything_including_manual() {
   DispenseRequest manual;
   manual.kind = SessionKind::Manual;
   manual.ml = 50;
-  GlobalState leak;
-  leak.leak = true;
-  GlobalState estop;
+  NodeState estop;
   estop.emergencyStop = true;
-  GlobalState empty;
-  empty.reservoirEmpty = true;
-  GlobalState busy;
-  busy.outletActive = true;
-  TEST_ASSERT_EQUAL(BlockReason::Leak, eval(leak, {}, manual).reason);
+  NodeState empty;
+  empty.bottleEmpty = true;
+  NodeState flat;
+  flat.batteryCritical = true;
   TEST_ASSERT_EQUAL(BlockReason::EmergencyStop, eval(estop, {}, manual).reason);
-  TEST_ASSERT_EQUAL(BlockReason::ReservoirEmpty, eval(empty, {}, manual).reason);
-  TEST_ASSERT_EQUAL(BlockReason::OutletBusy, eval(busy, {}, manual).reason);
+  TEST_ASSERT_EQUAL(BlockReason::BottleEmpty, eval(empty, {}, manual).reason);
+  TEST_ASSERT_EQUAL(BlockReason::BatteryLow, eval(flat, {}, manual).reason);
   PlantRuntime locked;
   locked.lockedOut = true;
   TEST_ASSERT_EQUAL(BlockReason::Lockout, eval({}, locked, manual).reason);
 }
 
 void test_automation_rules_skip_for_manual() {
-  GlobalState paused;
+  NodeState paused;
   paused.automationEnabled = false;
   TEST_ASSERT_EQUAL(BlockReason::AutomationPaused, eval(paused, {}, autoReq(50)).reason);
   TEST_ASSERT_EQUAL(BlockReason::SensorFault, eval({}, {}, autoReq(50), SensorHealth::Failed).reason);
@@ -107,10 +104,6 @@ void test_daily_limits() {
   TEST_ASSERT_EQUAL_FLOAT(40, v.ml);
   rt.mlToday = 298;
   TEST_ASSERT_EQUAL(BlockReason::PlantDailyLimit, eval({}, rt, autoReq(100)).reason);
-
-  GlobalState g;
-  g.mlTodayTotal = 4998;
-  TEST_ASSERT_EQUAL(BlockReason::TotalDailyLimit, eval(g, {}, autoReq(50)).reason);
 }
 
 void test_invalid_amount() {

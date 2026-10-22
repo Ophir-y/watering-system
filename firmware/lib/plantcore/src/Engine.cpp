@@ -42,6 +42,9 @@ const char* plannerStateName(PlannerState s) {
 
 namespace {
 
+constexpr int kPlant = 0;  // alert/event channel of the plant
+constexpr int kNode = -1;  // ...and of the node itself
+
 std::string fmt(const char* f, ...) {
   char buf[320];
   va_list ap;
@@ -70,83 +73,68 @@ const char* issueDescription(SensorIssue issue) {
 
 }  // namespace
 
-Engine::Engine(IOutlets& outlets, IEngineSink& sink) : outlets_(outlets), sink_(sink), dose_(outlets) {}
+Engine::Engine(IPump& pump, IEngineSink& sink) : pump_(pump), sink_(sink), dose_(pump) {}
 
-const PlantProfile* Engine::plantAt(int ch) const {
-  int idx = ch_[ch].plant;
-  return idx >= 0 && idx < static_cast<int>(plants_.size()) ? &plants_[idx] : nullptr;
+std::string Engine::label() const { return havePlant_ && !plant_.name.empty() ? plant_.name : std::string("Plant"); }
+
+void Engine::resetPlant() {
+  monitor_.reset();
+  ema_.reset();
+  planner_ = Planner{};
+  runtime_ = PlantRuntime{};
+  haveMoisture_ = false;
+  moisturePct_ = 0;
+  raw_ = 0;
+  trendN_ = 0;
+  trendPctPerMin_ = 0;
+  lastSampleMs_ = 0;
+  lastDoseEndMs_ = -kRecentlyWateredMs;
+  sessionMono_ = false;
+  wetSinceMs_ = tempOutSinceMs_ = humOutSinceMs_ = -1;
+  lastLoggedBlock_ = BlockReason::None;
+  alerts_.clearChannel(kPlant, last_.now);
 }
 
-std::string Engine::plantLabel(int ch) const {
-  const PlantProfile* p = plantAt(ch);
-  if (p && !p->name.empty()) return p->name;
-  return fmt("Channel %d", ch + 1);
-}
-
-int Engine::plantIndex(const std::string& id) const {
-  for (size_t i = 0; i < plants_.size(); ++i) {
-    if (plants_[i].id == id) return static_cast<int>(i);
-  }
-  return -1;
-}
-
-void Engine::configure(const Settings& settings, const std::vector<PlantProfile>& plants) {
-  std::array<int, kMaxPlants> map;
-  map.fill(-1);
-  for (size_t i = 0; i < plants.size(); ++i) {
-    int c = plants[i].channel;
-    if (c < kMaxPlants && map[c] < 0) map[c] = static_cast<int>(i);
-  }
-
-  for (int c = 0; c < kMaxPlants; ++c) {
-    const PlantProfile* before = plantAt(c);
-    const PlantProfile* after = map[c] >= 0 ? &plants[map[c]] : nullptr;
-    const bool same = before && after && before->id == after->id;
-    if (!same && (before || after)) {
-      if (!dose_.idle() && dose_.request().channel == c) dose_.abort(last_.monoMs);
-      ch_[c] = Channel{};
-      alerts_.clearChannel(static_cast<int8_t>(c), last_.now);
-    } else if (same && (before->cal.rawDry != after->cal.rawDry || before->cal.rawWet != after->cal.rawWet)) {
-      ch_[c].ema.reset();
-      ch_[c].monitor.reset();
-      ch_[c].haveMoisture = false;
-    }
+void Engine::configure(const Settings& settings, const PlantProfile* plant) {
+  const bool same = havePlant_ && plant && plant->id == plant_.id;
+  if (!same && (havePlant_ || plant)) {
+    pending_.active = false;
+    if (!dose_.idle()) dose_.abort(last_.monoMs);
+    resetPlant();
+  } else if (same && (plant->cal.rawDry != plant_.cal.rawDry || plant->cal.rawWet != plant_.cal.rawWet)) {
+    ema_.reset();
+    monitor_.reset();
+    haveMoisture_ = false;
   }
 
   settings_ = settings;
-  plants_ = plants;
-  for (int c = 0; c < kMaxPlants; ++c) ch_[c].plant = map[c];
-  reservoir_.configure(settings_.reservoir);
-  if (!settings_.automationEnabled) {
-    for (auto& c : ch_) c.planner.abort(last_.monoMs);
-  }
+  havePlant_ = plant != nullptr;
+  if (plant) plant_ = *plant;
+  bottle_.configure(plant_.bottle);
+  pumpMon_.configure(plant_.pump.currentSense);
+  if (!settings_.automationEnabled) planner_.abort(last_.monoMs);
 }
 
 void Engine::restore(const PersistedState& st, const Inputs& in) {
   last_ = in;
-  for (int c = 0; c < kMaxPlants; ++c) ch_[c].runtime = st.plants[c];
+  runtime_ = st.plant;
+  bottle_.restore(st.bottle);
+  pumpMon_.restore(st.pump);
   day_ = st.day;
-  mlTodayTotal_ = st.mlTodayTotal;
-  reservoir_.setUsagePerDay(st.usagePerDayMl);
+  stopped_ = st.stopped;
   lastRolloverMs_ = in.monoMs;
 
-  if (st.emergencyStop) {
-    emergencyStop_ = true;
-    raise(AlertCode::EmergencyStop, Severity::Info, -1,
-          "Emergency stop is still active after a restart. Resume from the dashboard.");
-  }
-  if (st.dispenseInProgress && st.inProgressChannel < kMaxPlants) {
-    int c = st.inProgressChannel;
-    Channel& chn = ch_[c];
-    chn.runtime.mlToday += st.inProgressMl;
-    mlTodayTotal_ += st.inProgressMl;
-    if (in.timeValid) chn.runtime.lastSessionEndS = in.now;
-    chn.sessionMono = true;
-    chn.lastSessionMonoMs = in.monoMs;
-    std::string msg = fmt("The device restarted while watering %s. The full %.0f ml was counted to be safe.",
-                          plantLabel(c).c_str(), st.inProgressMl);
-    raise(AlertCode::InterruptedDispense, Severity::Warning, c, msg);
-    event(EventType::Watering, c, "interrupted", st.inProgressMl, msg);
+  if (st.dispenseInProgress && havePlant_) {
+    runtime_.mlToday += st.inProgressMl;
+    bottle_.dispensed(st.inProgressMl, st.inProgressMl / bottle_.flowFactor());
+    if (in.timeValid) runtime_.lastSessionEndS = in.now;
+    sessionMono_ = true;
+    lastSessionMonoMs_ = in.monoMs;
+    const std::string msg =
+        fmt("The node restarted while watering %s. The full %.0f ml was counted to be safe.", label().c_str(),
+            st.inProgressMl);
+    raise(AlertCode::InterruptedDispense, Severity::Warning, kPlant, msg);
+    event(EventType::Watering, kPlant, "interrupted", st.inProgressMl, msg);
     persist();
   }
 }
@@ -154,12 +142,25 @@ void Engine::restore(const PersistedState& st, const Inputs& in) {
 void Engine::tick(const Inputs& in) {
   last_ = in;
   rolloverDay(in);
-  handleInterlocks(in);
+  processBattery(in);
+  if (!havePlant_) return;
   processMoisture(in);
   processEnvironment(in);
-  processReservoir(in);
   stepDose(in);
-  stepPlanners(in);
+  processBottle();
+  stepPlanner(in);
+}
+
+MonoMs Engine::wantTickBy(MonoMs now) const {
+  if (pending_.active) return now;
+  if (!dose_.idle()) return now + 100;
+  switch (planner_.state()) {
+    case PlannerState::WantPulse:
+    case PlannerState::Pulsing: return now;
+    case PlannerState::Soaking: return std::min(planner_.soakUntil(), now + kSessionSampleMs);
+    case PlannerState::Idle: break;
+  }
+  return -1;
 }
 
 // ------------------------------------------------------------------ day rollover
@@ -180,441 +181,433 @@ void Engine::rolloverDay(const Inputs& in) {
   }
   if (!roll) return;
 
-  reservoir_.onDayRollover(mlTodayTotal_);
-  for (int c = 0; c < kMaxPlants; ++c) {
-    ch_[c].runtime.mlToday = 0;
-    clear(AlertCode::DailyLimitReached, c);
-  }
-  mlTodayTotal_ = 0;
+  bottle_.onDayRollover(runtime_.mlToday);
+  runtime_.mlToday = 0;
+  clear(AlertCode::DailyLimitReached, kPlant);
   if (in.timeValid) day_ = in.localDay;
   lastRolloverMs_ = in.monoMs;
   persist();
 }
 
-// ------------------------------------------------------------------ interlocks
+// ------------------------------------------------------------------ battery
 
-void Engine::handleInterlocks(const Inputs& in) {
-  const bool leakNow = settings_.leakSensorEnabled && in.leak;
-  if (leakNow) {
-    if (!leakLatched_) {
-      leakLatched_ = true;
-      raise(AlertCode::LeakDetected, Severity::Critical, -1,
-            "Water detected by the leak sensor. All watering stopped until you resume.");
-      emergencyStop("leak detected");
-    }
-  } else {
-    clear(AlertCode::LeakDetected, -1);
+void Engine::processBattery(const Inputs& in) {
+  // Cells sag while the pump runs; judge them only at rest.
+  if (dose_.running()) {
+    batteryQuietUntilMs_ = in.monoMs + 2000;
+    return;
+  }
+  if (!(in.batteryMv > 0) || in.monoMs < batteryQuietUntilMs_) return;
+  batteryMv_ = in.batteryMv;
+
+  if (batteryMv_ < kBatteryCriticalMv) {
+    batteryCritical_ = true;
+  } else if (batteryMv_ > kBatteryCriticalMv + kBatteryRecoverMv) {
+    batteryCritical_ = false;
+  }
+  if (batteryMv_ < kBatteryLowMv) {
+    batteryLow_ = true;
+  } else if (batteryMv_ > kBatteryLowMv + kBatteryRecoverMv) {
+    batteryLow_ = false;
   }
 
-  if (settings_.reservoir.scaleEnabled) {
-    if (!in.scaleOk) {
-      if (scaleBadSinceMs_ < 0) {
-        scaleBadSinceMs_ = in.monoMs;
-      } else if (in.monoMs - scaleBadSinceMs_ >= kScaleFaultAfterMs) {
-        raise(AlertCode::ScaleFault, Severity::Warning, -1,
-              "The reservoir scale is not responding or not calibrated. Doses fall back to timed mode; the "
-              "float switch still protects against running dry.");
-      }
-    } else {
-      scaleBadSinceMs_ = -1;
-      clear(AlertCode::ScaleFault, -1);
-    }
+  if (batteryCritical_) {
+    raise(AlertCode::BatteryLow, Severity::Critical, kNode,
+          fmt("%s: batteries are flat (%.2f V). The pump is off until you replace them.", label().c_str(),
+              batteryMv_ / 1000.0f));
+  } else if (batteryLow_) {
+    raise(AlertCode::BatteryLow, Severity::Warning, kNode,
+          fmt("%s: batteries are low (%.2f V). Replace them soon.", label().c_str(), batteryMv_ / 1000.0f));
+  } else {
+    clear(AlertCode::BatteryLow, kNode);
   }
 }
 
 // ------------------------------------------------------------------ sensors
 
-void Engine::pushTrend(Channel& chn, float pct, MonoMs now) {
-  chn.trendPct = {chn.trendPct[1], chn.trendPct[2], pct};
-  chn.trendMs = {chn.trendMs[1], chn.trendMs[2], now};
-  chn.trendN = std::min(chn.trendN + 1, 3);
-  const MonoMs span = chn.trendMs[2] - chn.trendMs[0];
-  chn.trendPctPerMin = chn.trendN == 3 && span > 0 ? (chn.trendPct[2] - chn.trendPct[0]) / (span / 60000.0f) : 0;
+void Engine::pushTrend(float pct, MonoMs now, std::array<float, 3>& pcts, std::array<MonoMs, 3>& ms, int& n,
+                       float& rate) {
+  pcts = {pcts[1], pcts[2], pct};
+  ms = {ms[1], ms[2], now};
+  n = std::min(n + 1, 3);
+  const MonoMs span = ms[2] - ms[0];
+  rate = n == 3 && span > 0 ? (pcts[2] - pcts[0]) / (span / 60000.0f) : 0;
 }
 
-bool Engine::sensorUsable(int c, const Inputs& in) const {
-  const Channel& chn = ch_[c];
-  if (!chn.haveMoisture || chn.monitor.health() == SensorHealth::Failed) return false;
-  MonoMs staleMs = std::max<MonoMs>(5LL * settings_.sampleIntervalS * 1000, 5LL * 60 * 1000);
-  return in.monoMs - chn.lastSampleMs <= staleMs;
+bool Engine::sensorUsable(const Inputs& in) const {
+  if (!haveMoisture_ || monitor_.health() == SensorHealth::Failed) return false;
+  const MonoMs staleMs = std::max<MonoMs>(5LL * settings_.checkInMin * 60000, 5LL * 60 * 1000);
+  return in.monoMs - lastSampleMs_ <= staleMs;
 }
 
 void Engine::processMoisture(const Inputs& in) {
-  for (int c = 0; c < kMaxPlants; ++c) {
-    Channel& chn = ch_[c];
-    if (chn.plant < 0 || !in.moisture[c].fresh) continue;
-    const PlantProfile& p = plants_[chn.plant];
-    const MoistureSample& s = in.moisture[c];
+  if (!in.moisture.fresh) return;
+  const PlantProfile& p = plant_;
+  const MoistureSample& s = in.moisture;
 
-    const bool dosingHere = !dose_.idle() && dose_.request().channel == c;
-    const bool recently = dosingHere || in.monoMs - chn.lastDoseEndMs < kRecentlyWateredMs;
-    chn.raw = s.raw;
-    const bool usable = chn.monitor.onSample(s, p.cal, in.monoMs, recently);
-    if (usable) {
-      const float pct = rawToPercent(s.raw, p.cal);
-      const bool hadPrev = chn.haveMoisture;
-      const float prev = chn.moisturePct;
-      chn.moisturePct = chn.ema.update(pct);
-      chn.haveMoisture = true;
-      chn.lastSampleMs = in.monoMs;
-      if (hadPrev && !recently && chn.planner.state() == PlannerState::Idle &&
-          pct - prev > kDetectedWateringRisePct) {
-        event(EventType::Watering, c, "detected", 0,
-              fmt("%s: moisture jumped from %.0f%% to %.0f%% without the system watering (watered by hand?)",
-                  plantLabel(c).c_str(), prev, pct));
-        chn.ema.reset();
-        chn.moisturePct = chn.ema.update(pct);
-        chn.trendN = 0;
-      }
-      pushTrend(chn, chn.moisturePct, in.monoMs);
+  const bool recently = !dose_.idle() || in.monoMs - lastDoseEndMs_ < kRecentlyWateredMs;
+  raw_ = s.raw;
+  const bool usable = monitor_.onSample(s, p.cal, in.monoMs, recently);
+  if (usable) {
+    const float pct = rawToPercent(s.raw, p.cal);
+    const bool hadPrev = haveMoisture_;
+    const float prev = moisturePct_;
+    moisturePct_ = ema_.update(pct);
+    haveMoisture_ = true;
+    lastSampleMs_ = in.monoMs;
+    if (hadPrev && !recently && planner_.state() == PlannerState::Idle && pct - prev > kDetectedWateringRisePct) {
+      event(EventType::Watering, kPlant, "detected", 0,
+            fmt("%s: moisture jumped from %.0f%% to %.0f%% without the node watering (watered by hand?)",
+                label().c_str(), prev, pct));
+      ema_.reset();
+      moisturePct_ = ema_.update(pct);
+      trendN_ = 0;
     }
+    pushTrend(moisturePct_, in.monoMs, trendPct_, trendMs_, trendN_, trendPctPerMin_);
+  }
 
-    const SensorIssue issue = chn.monitor.issue();
-    if (issue != SensorIssue::NoResponse) clear(AlertCode::SensorNoResponse, c);
-    if (issue == SensorIssue::Uncalibrated) {
-      raise(AlertCode::CalibrationNeeded, Severity::Info, c,
-            fmt("%s: calibrate the moisture sensor (dry and wet points) before automatic watering can start.",
-                plantLabel(c).c_str()));
-      clear(AlertCode::SensorFault, c);
+  const SensorIssue issue = monitor_.issue();
+  if (issue != SensorIssue::NoResponse) clear(AlertCode::SensorNoResponse, kPlant);
+  if (issue == SensorIssue::Uncalibrated) {
+    raise(AlertCode::CalibrationNeeded, Severity::Info, kPlant,
+          fmt("%s: calibrate the moisture sensor (dry and wet points) before automatic watering can start.",
+              label().c_str()));
+    clear(AlertCode::SensorFault, kPlant);
+  } else {
+    clear(AlertCode::CalibrationNeeded, kPlant);
+    if (issue == SensorIssue::None || issue == SensorIssue::NoResponse) {
+      clear(AlertCode::SensorFault, kPlant);
     } else {
-      clear(AlertCode::CalibrationNeeded, c);
-      if (issue == SensorIssue::None || issue == SensorIssue::NoResponse) {
-        clear(AlertCode::SensorFault, c);
-      } else {
-        Severity sev = chn.monitor.health() == SensorHealth::Failed ? Severity::Warning : Severity::Info;
-        raise(AlertCode::SensorFault, sev, c,
-              fmt("%s: moisture sensor %s.", plantLabel(c).c_str(), issueDescription(issue)));
-      }
+      const Severity sev = monitor_.health() == SensorHealth::Failed ? Severity::Warning : Severity::Info;
+      raise(AlertCode::SensorFault, sev, kPlant,
+            fmt("%s: moisture sensor %s.", label().c_str(), issueDescription(issue)));
     }
+  }
 
-    if (!usable || !chn.haveMoisture) continue;
-    if (chn.moisturePct < p.moisture.critical) {
-      raise(AlertCode::PlantTooDry, Severity::Warning, c,
-            fmt("%s is very dry (%.0f%%, critical below %.0f%%).", plantLabel(c).c_str(), chn.moisturePct,
-                p.moisture.critical));
-    } else if (chn.moisturePct > p.moisture.min) {
-      clear(AlertCode::PlantTooDry, c);
+  if (!usable || !haveMoisture_) return;
+  if (moisturePct_ < p.moisture.critical) {
+    raise(AlertCode::PlantTooDry, Severity::Warning, kPlant,
+          fmt("%s is very dry (%.0f%%, critical below %.0f%%).", label().c_str(), moisturePct_, p.moisture.critical));
+  } else if (moisturePct_ > p.moisture.min) {
+    clear(AlertCode::PlantTooDry, kPlant);
+  }
+  if (moisturePct_ > p.moisture.max) {
+    if (wetSinceMs_ < 0) {
+      wetSinceMs_ = in.monoMs;
+    } else if (in.monoMs - wetSinceMs_ >= kTooWetAfterMs) {
+      raise(AlertCode::PlantTooWet, Severity::Warning, kPlant,
+            fmt("%s has stayed above %.0f%% moisture for 2 days. Check drainage and pot size, or adjust its band.",
+                label().c_str(), p.moisture.max));
     }
-    if (chn.moisturePct > p.moisture.max) {
-      if (chn.wetSinceMs < 0) {
-        chn.wetSinceMs = in.monoMs;
-      } else if (in.monoMs - chn.wetSinceMs >= kTooWetAfterMs) {
-        raise(AlertCode::PlantTooWet, Severity::Warning, c,
-              fmt("%s has stayed above %.0f%% moisture for 2 days. Check drainage and pot size, or adjust "
-                  "its moisture band.",
-                  plantLabel(c).c_str(), p.moisture.max));
-      }
-    } else if (chn.moisturePct < p.moisture.max - 2) {
-      chn.wetSinceMs = -1;
-      clear(AlertCode::PlantTooWet, c);
-    }
+  } else if (moisturePct_ < p.moisture.max - 2) {
+    wetSinceMs_ = -1;
+    clear(AlertCode::PlantTooWet, kPlant);
   }
 }
 
 void Engine::processEnvironment(const Inputs& in) {
-  for (int c = 0; c < kMaxPlants; ++c) {
-    Channel& chn = ch_[c];
-    if (chn.plant < 0) continue;
-    if (!in.env.valid) {
-      chn.tempOutSinceMs = chn.humOutSinceMs = -1;
-      continue;
-    }
-    const PlantProfile& p = plants_[chn.plant];
+  if (!in.env.valid) {
+    tempOutSinceMs_ = humOutSinceMs_ = -1;
+    return;
+  }
+  const PlantProfile& p = plant_;
 
-    const bool tempOut = in.env.tempC < p.tempC.min || in.env.tempC > p.tempC.max;
-    if (!tempOut) {
-      chn.tempOutSinceMs = -1;
-      clear(AlertCode::TempOutOfRange, c);
-    } else if (chn.tempOutSinceMs < 0) {
-      chn.tempOutSinceMs = in.monoMs;
-    } else if (in.monoMs - chn.tempOutSinceMs >= kEnvAlertAfterMs) {
-      raise(AlertCode::TempOutOfRange, Severity::Info, c,
-            fmt("%s prefers %.0f-%.0f °C; it has been %.1f °C for over 2 hours.", plantLabel(c).c_str(),
-                p.tempC.min, p.tempC.max, in.env.tempC));
-    }
+  const bool tempOut = in.env.tempC < p.tempC.min || in.env.tempC > p.tempC.max;
+  if (!tempOut) {
+    tempOutSinceMs_ = -1;
+    clear(AlertCode::TempOutOfRange, kPlant);
+  } else if (tempOutSinceMs_ < 0) {
+    tempOutSinceMs_ = in.monoMs;
+  } else if (in.monoMs - tempOutSinceMs_ >= kEnvAlertAfterMs) {
+    raise(AlertCode::TempOutOfRange, Severity::Info, kPlant,
+          fmt("%s prefers %.0f-%.0f °C; it has been %.1f °C for over 2 hours.", label().c_str(), p.tempC.min,
+              p.tempC.max, in.env.tempC));
+  }
 
-    const bool humOut = in.env.humidityPct < p.humidityPct.min || in.env.humidityPct > p.humidityPct.max;
-    if (!humOut) {
-      chn.humOutSinceMs = -1;
-      clear(AlertCode::HumidityOutOfRange, c);
-    } else if (chn.humOutSinceMs < 0) {
-      chn.humOutSinceMs = in.monoMs;
-    } else if (in.monoMs - chn.humOutSinceMs >= kEnvAlertAfterMs) {
-      raise(AlertCode::HumidityOutOfRange, Severity::Info, c,
-            fmt("%s prefers %.0f-%.0f %% humidity; it has been %.0f %% for over 2 hours.", plantLabel(c).c_str(),
-                p.humidityPct.min, p.humidityPct.max, in.env.humidityPct));
-    }
+  const bool humOut = in.env.humidityPct < p.humidityPct.min || in.env.humidityPct > p.humidityPct.max;
+  if (!humOut) {
+    humOutSinceMs_ = -1;
+    clear(AlertCode::HumidityOutOfRange, kPlant);
+  } else if (humOutSinceMs_ < 0) {
+    humOutSinceMs_ = in.monoMs;
+  } else if (in.monoMs - humOutSinceMs_ >= kEnvAlertAfterMs) {
+    raise(AlertCode::HumidityOutOfRange, Severity::Info, kPlant,
+          fmt("%s prefers %.0f-%.0f %% humidity; it has been %.0f %% for over 2 hours.", label().c_str(),
+              p.humidityPct.min, p.humidityPct.max, in.env.humidityPct));
   }
 }
 
-// ------------------------------------------------------------------ reservoir
+// ------------------------------------------------------------------ bottle
 
-void Engine::processReservoir(const Inputs& in) {
-  const bool floatLow = settings_.reservoir.floatSwitchEnabled && in.floatLow;
-  reservoir_.update(in.monoMs, in.scaleOk, in.scaleGrams, floatLow, !dose_.idle());
-
-  ReservoirEvent ev;
-  if (reservoir_.takeEvent(ev)) {
-    if (ev.type == ReservoirEventType::Refill) {
-      event(EventType::Refill, -1, "refill", ev.ml, fmt("Reservoir refilled (+%.0f ml)", ev.ml));
-    } else if (ev.type == ReservoirEventType::UnexplainedLoss) {
-      raise(AlertCode::ReservoirUnexplainedLoss, Severity::Critical, -1,
-            fmt("The reservoir lost %.0f ml while nothing was being watered. Possible leak or a valve stuck "
-                "open. All watering stopped.",
-                ev.ml));
-      emergencyStop("unexplained reservoir loss");
+void Engine::processBottle() {
+  const BottleStatus b = bottle_.status();
+  if (b.empty) {
+    std::string why;
+    switch (b.reason) {
+      case EmptyReason::PumpDry: why = "the pump ran dry"; break;
+      case EmptyReason::NoResponse: why = "watering stopped making the soil wetter (or the tube slipped out)"; break;
+      default: why = "the gauge counted it empty"; break;
     }
+    raise(AlertCode::BottleEmpty, Severity::Critical, kPlant,
+          fmt("%s's bottle is empty: %s. Refill it, then press the node's button.", label().c_str(), why.c_str()));
+    clear(AlertCode::BottleLow, kPlant);
+    return;
   }
-
-  const ReservoirStatus rs = reservoir_.status();
-  if (rs.empty) {
-    raise(AlertCode::ReservoirEmpty, Severity::Critical, -1,
-          rs.floatLow ? "The reservoir is empty (float switch). Watering is paused until it is refilled."
-                      : "The reservoir is empty or lifted off the scale. Watering is paused until it is refilled.");
-    if (dose_.outletOpen()) dose_.abort(in.monoMs);
-    clear(AlertCode::ReservoirLow, -1);
+  clear(AlertCode::BottleEmpty, kPlant);
+  if (b.low) {
+    const std::string days = b.daysLeft >= 0 ? fmt(", about %.1f days left", b.daysLeft) : std::string();
+    raise(AlertCode::BottleLow, Severity::Warning, kPlant,
+          fmt("%s's bottle is low: about %.0f ml (%.0f%%)%s.", label().c_str(), b.ml, b.pct, days.c_str()));
   } else {
-    clear(AlertCode::ReservoirEmpty, -1);
-    const bool stillLow = alerts_.isActive(AlertCode::ReservoirLow, -1) && rs.scaleValid &&
-                          rs.pct < settings_.reservoir.lowPct + 3;
-    if (rs.low || stillLow) {
-      std::string days = rs.daysLeft >= 0 ? fmt(", about %.1f days left", rs.daysLeft) : std::string();
-      raise(AlertCode::ReservoirLow, Severity::Warning, -1,
-            fmt("The reservoir is low: %.0f ml (%.0f%%)%s.", rs.ml, rs.pct, days.c_str()));
-    } else {
-      clear(AlertCode::ReservoirLow, -1);
-    }
+    clear(AlertCode::BottleLow, kPlant);
   }
+}
 
-  if (rs.disagree) {
-    raise(AlertCode::FloatScaleDisagree, Severity::Warning, -1,
-          fmt("The float switch reports an empty reservoir but the scale reads %.0f ml. One of them is faulty; "
-              "the reservoir is treated as empty.",
-              rs.ml));
-  } else {
-    clear(AlertCode::FloatScaleDisagree, -1);
-  }
+void Engine::refilled(float ml) {
+  bottle_.refilled(ml);
+  const BottleStatus b = bottle_.status();
+  clear(AlertCode::BottleEmpty, kPlant);
+  if (!b.low) clear(AlertCode::BottleLow, kPlant);
+  event(EventType::Refill, kPlant, "refill", ml > 0 ? ml : b.capacityMl,
+        ml > 0 && ml < b.capacityMl ? fmt("Bottle topped up (+%.0f ml)", ml) : std::string("Bottle refilled"));
+  persist();
 }
 
 // ------------------------------------------------------------------ dosing
 
-float Engine::effectiveFlow(const PlantProfile& p) const {
-  float flow = std::max(p.outlet.flowMlPerS, 0.05f);
-  if (p.outlet.type != OutletType::Valve) return flow;
-  // Gravity feed: flow ~ sqrt(head). Scale the calibrated flow by the current head.
-  const ReservoirStatus rs = reservoir_.status();
-  if (!rs.scaleValid) return flow;
-  const float h = settings_.reservoir.fullHeightMm;
-  const float headNow = p.outlet.dropMm + rs.pct / 100.0f * h;
-  const float headCal = p.outlet.dropMm + p.outlet.calFillPct / 100.0f * h;
-  if (headNow > 1 && headCal > 1) flow *= std::sqrt(headNow / headCal);
-  return flow;
+float Engine::effectiveFlow() const { return std::max(plant_.pump.flowMlPerS, 0.05f) * bottle_.flowFactor(); }
+
+bool Engine::fitToGauge(Verdict& v) {
+  // Once the pump's wet current is known, the pump itself tells when the bottle is
+  // empty. Until then the gauge is the only guard: never pump into the reserve.
+  if (!v.allowed || pumpMon_.ready()) return v.allowed;
+  const float available = bottle_.status().ml - plant_.bottle.reserveMl;
+  if (available < kMinDoseMl) {
+    bottle_.markEmpty(EmptyReason::Gauge);
+    processBottle();
+    v = Verdict{false, BlockReason::BottleEmpty, 0};
+    return false;
+  }
+  v.ml = std::min(v.ml, available);
+  return true;
 }
 
-GlobalState Engine::globalState() const {
-  GlobalState g;
-  g.automationEnabled = settings_.automationEnabled;
-  g.emergencyStop = emergencyStop_;
-  g.leak = leakLatched_ || (settings_.leakSensorEnabled && last_.leak);
-  g.reservoirEmpty = reservoir_.status().empty;
-  g.outletActive = !dose_.idle();
-  g.mlTodayTotal = mlTodayTotal_;
-  return g;
+NodeState Engine::nodeState() const {
+  NodeState n;
+  n.automationEnabled = settings_.automationEnabled;
+  n.emergencyStop = stopped_;
+  n.bottleEmpty = bottle_.empty();
+  n.batteryCritical = batteryCritical_;
+  return n;
 }
 
-void Engine::startDose(int c, float ml, SessionKind kind, bool openLoop) {
-  const PlantProfile& p = *plantAt(c);
+void Engine::startDose(float ml, SessionKind kind, bool timed) {
   DoseRequest req;
-  req.channel = static_cast<uint8_t>(c);
   req.ml = ml;
-  req.flowMlPerS = effectiveFlow(p);
+  req.flowMlPerS = effectiveFlow();
   req.maxOnMs = maxOnTimeMs(settings_.limits, ml, req.flowMlPerS);
-  req.closedLoop = !openLoop && settings_.reservoir.scaleEnabled && last_.scaleOk;
-  doseTimed_ = openLoop;
+  doseTimed_ = timed;
+  doseKind_ = kind;
 
-  // Record the dispense before any water moves, so a power cut mid-dose is accounted for.
+  // Record the dose before any water moves, so a power cut mid-dose is accounted for.
   dispenseInProgress_ = true;
-  inProgressCh_ = req.channel;
   inProgressMl_ = ml;
   persist();
 
-  doseKind_ = kind;
-  dose_.start(req, last_.monoMs, req.closedLoop, last_.scaleGrams);
+  dose_.start(req, last_.monoMs);
+  pumpMon_.start(last_.monoMs);
 }
 
 void Engine::stepDose(const Inputs& in) {
+  if (pending_.active && dose_.idle()) {
+    pending_.active = false;
+    startDose(pending_.ml, SessionKind::Manual, pending_.timed);
+  }
   if (dose_.idle()) return;
-  dose_.tick(in.monoMs, in.scaleOk && settings_.reservoir.scaleEnabled, in.scaleGrams);
-  if (!dose_.finished()) return;
+  if (dose_.running() && in.pumpSense && pumpMon_.enabled()) {
+    switch (pumpMon_.sample(in.monoMs, in.pumpMa, in.batteryMv)) {
+      case PumpVerdict::Dry: dose_.fail(DoseFault::PumpDry, in.monoMs, pumpMon_.drySinceMs()); break;
+      case PumpVerdict::Disconnected: dose_.fail(DoseFault::PumpDisconnected, in.monoMs, 0); break;
+      case PumpVerdict::Jammed: dose_.fail(DoseFault::PumpJammed, in.monoMs, 0); break;
+      case PumpVerdict::Ok: break;
+    }
+  }
+  dose_.tick(in.monoMs);
+  if (dose_.finished()) finishDose(in);
+}
 
-  const int c = dose_.request().channel;
+void Engine::finishDose(const Inputs& in) {
   const float ml = dose_.dispensedMl();
   const DoseFault fault = dose_.fault();
-  Channel& chn = ch_[c];
 
-  chn.runtime.mlToday += ml;
-  mlTodayTotal_ += ml;
-  if (dose_.request().closedLoop) reservoir_.accountDispensed(ml);
-  chn.lastDoseEndMs = in.monoMs;
+  if (!doseTimed_) runtime_.mlToday += ml;
+  bottle_.dispensed(ml, ml / bottle_.flowFactor());
+  // Learn the wet current only from runs that very likely moved water.
+  pumpMon_.finish(fault == DoseFault::None && bottle_.status().pct >= kPumpLearnMinBottlePct);
+  lastPumpVerdict_ = pumpMon_.verdict();
+  lastDoseEndMs_ = in.monoMs;
   dispenseInProgress_ = false;
 
   lastDose_.valid = true;
-  lastDose_.channel = static_cast<uint8_t>(c);
-  lastDose_.plantId = plantAt(c) ? plantAt(c)->id : std::string();
   lastDose_.ml = ml;
   lastDose_.onTimeMs = dose_.onTimeMs();
-  lastDose_.closedLoop = dose_.request().closedLoop;
+  lastDose_.timed = doseTimed_;
+  lastDose_.fault = fault;
   lastDose_.at = in.now;
 
   if (doseKind_ == SessionKind::Manual) {
-    if (ml > 0) {
-      if (in.timeValid) chn.runtime.lastSessionEndS = in.now;
-      chn.sessionMono = true;
-      chn.lastSessionMonoMs = in.monoMs;
+    if (ml > 0 && !doseTimed_) {
+      if (in.timeValid) runtime_.lastSessionEndS = in.now;
+      sessionMono_ = true;
+      lastSessionMonoMs_ = in.monoMs;
     }
-    std::string detail = doseTimed_ ? fmt("Timed outlet run (%.1f s)", dose_.onTimeMs() / 1000.0f)
+    std::string detail = doseTimed_ ? fmt("Timed pump run (%.1f s)", dose_.onTimeMs() / 1000.0f)
                                     : std::string("Manual watering");
     if (fault != DoseFault::None) detail += std::string(" stopped: ") + doseFaultName(fault);
-    event(EventType::Watering, c, doseTimed_ ? "timed" : "manual", ml, detail);
+    event(EventType::Watering, kPlant, doseTimed_ ? "timed" : "manual", ml, detail);
   } else if (fault == DoseFault::None) {
-    chn.planner.onDoseFinished(ml, in.monoMs, plantAt(c) ? plantAt(c)->soakMin : 10);
+    planner_.onDoseFinished(ml, in.monoMs, plant_.soakMin);
   } else {
-    chn.planner.onDoseFailed(in.monoMs);
+    planner_.onDoseFailed(in.monoMs);
   }
-
-  const float requested = dose_.request().ml;
   dose_.acknowledge();
 
-  if (fault == DoseFault::NoFlow) {
-    chn.runtime.lockedOut = true;
-    raise(AlertCode::OutletNoFlow, Severity::Warning, c,
-          fmt("No water left the reservoir for %s (%.0f of %.0f ml). Check the tubing, pump or valve. The outlet "
-              "is locked until you clear it.",
-              plantLabel(c).c_str(), ml, requested));
-  } else if (fault == DoseFault::StuckOpen) {
-    chn.runtime.lockedOut = true;
-    raise(AlertCode::OutletStuckOpen, Severity::Critical, c,
-          fmt("Water kept flowing after %s's outlet closed: a stuck valve or a siphon. All watering stopped.",
-              plantLabel(c).c_str()));
-    emergencyStop("outlet stuck open");
+  switch (fault) {
+    case DoseFault::PumpDry:
+      bottle_.markEmpty(EmptyReason::PumpDry);
+      break;
+    case DoseFault::PumpDisconnected:
+      runtime_.lockedOut = true;
+      raise(AlertCode::PumpDisconnected, Severity::Warning, kPlant,
+            fmt("%s's pump drew no current: check its wires and the MOSFET. Watering is locked until you clear it.",
+                label().c_str()));
+      break;
+    case DoseFault::PumpJammed:
+      runtime_.lockedOut = true;
+      raise(AlertCode::PumpJammed, Severity::Warning, kPlant,
+            fmt("%s's pump drew far too much current: the impeller may be blocked. Watering is locked until you "
+                "clear it.",
+                label().c_str()));
+      break;
+    case DoseFault::None:
+      // Without a learned pump current the gauge decides; with one, the pump does.
+      if (bottle_.belowReserve() && !pumpMon_.ready()) bottle_.markEmpty(EmptyReason::Gauge);
+      break;
+    case DoseFault::Aborted:
+      break;
   }
   persist();
 }
 
 // ------------------------------------------------------------------ planning
 
-float Engine::secondsSinceLastSession(int c, const Inputs& in) const {
-  const Channel& chn = ch_[c];
-  if (chn.sessionMono) return (in.monoMs - chn.lastSessionMonoMs) / 1000.0f;
-  if (chn.runtime.lastSessionEndS > 0) {
-    if (in.timeValid) return static_cast<float>(std::max<EpochS>(0, in.now - chn.runtime.lastSessionEndS));
+float Engine::secondsSinceLastSession(const Inputs& in) const {
+  if (sessionMono_) return (in.monoMs - lastSessionMonoMs_) / 1000.0f;
+  if (runtime_.lastSessionEndS > 0) {
+    if (in.timeValid) return static_cast<float>(std::max<EpochS>(0, in.now - runtime_.lastSessionEndS));
     return in.monoMs / 1000.0f;  // wall time unknown: assume it happened just before boot
   }
   return 1e9f;
 }
 
-void Engine::stepPlanners(const Inputs& in) {
-  for (int k = 0; k < kMaxPlants; ++k) {
-    const int c = (rr_ + k) % kMaxPlants;
-    Channel& chn = ch_[c];
-    if (chn.plant < 0) continue;
-    const PlantProfile& p = plants_[chn.plant];
+void Engine::stepPlanner(const Inputs& in) {
+  const PlantProfile& p = plant_;
 
-    // A session may have ended in stepDose or a command; account for it before the
-    // planner decides anything, or it would not see the watering it just did.
-    SessionReport r;
-    if (chn.planner.takeReport(r)) handleReport(c, r, in);
+  // A session may have ended in stepDose or a command; account for it before the
+  // planner decides anything, or it would not see the watering it just did.
+  SessionReport r;
+  if (planner_.takeReport(r)) handleReport(r, in);
 
-    PlannerInput pin;
-    pin.monoMs = in.monoMs;
-    pin.sensorUsable = sensorUsable(c, in);
-    // Timed fallback only for a confirmed hardware fault: not while waiting for the first
-    // reading, and not after "no response" (the water may not be reaching the pot).
-    const SensorIssue issue = chn.monitor.issue();
-    pin.fallbackAllowed = issue == SensorIssue::BusError || issue == SensorIssue::Disconnected ||
-                          issue == SensorIssue::OutOfRange;
-    pin.moisturePct = chn.moisturePct;
-    pin.trendPctPerMin = chn.trendPctPerMin;
-    pin.adjust = computeAdjust(p, in.env, in.localMonth, settings_.southernHemisphere);
-    pin.inWindow = !in.timeValid || hourInWindow(in.localHour, settings_.waterWindowStartH, settings_.waterWindowEndH);
-    pin.secondsSinceLastSession = secondsSinceLastSession(c, in);
-    float sinceFallback = 1e9f;
-    if (chn.runtime.lastFallbackS > 0 && in.timeValid) {
-      sinceFallback = static_cast<float>(in.now - chn.runtime.lastFallbackS);
-    }
-    pin.secondsSinceLastFallback = std::min(sinceFallback, pin.secondsSinceLastSession);
+  PlannerInput pin;
+  pin.monoMs = in.monoMs;
+  pin.sensorUsable = sensorUsable(in);
+  // Timed fallback only for a confirmed hardware fault: not while waiting for the first
+  // reading, and not after "no response" (the water may not be reaching the pot).
+  const SensorIssue issue = monitor_.issue();
+  pin.fallbackAllowed =
+      issue == SensorIssue::BusError || issue == SensorIssue::Disconnected || issue == SensorIssue::OutOfRange;
+  pin.moisturePct = moisturePct_;
+  pin.trendPctPerMin = trendPctPerMin_;
+  pin.adjust = computeAdjust(p, in.env, in.localMonth, settings_.southernHemisphere);
+  pin.inWindow = !in.timeValid || hourInWindow(in.localHour, settings_.waterWindowStartH, settings_.waterWindowEndH);
+  pin.secondsSinceLastSession = secondsSinceLastSession(in);
+  float sinceFallback = 1e9f;
+  if (runtime_.lastFallbackS > 0 && in.timeValid) sinceFallback = static_cast<float>(in.now - runtime_.lastFallbackS);
+  pin.secondsSinceLastFallback = std::min(sinceFallback, pin.secondsSinceLastSession);
 
-    if (settings_.automationEnabled && !emergencyStop_) chn.planner.tick(p, chn.runtime, pin);
+  if (settings_.automationEnabled && !stopped_) planner_.tick(p, runtime_, pin);
 
-    if (chn.planner.state() == PlannerState::WantPulse && dose_.idle()) {
-      DispenseRequest req;
-      req.kind = chn.planner.kind();
-      req.continuation = chn.planner.continuation();
-      req.ml = chn.planner.pendingMl();
-      req.secondsSinceLastSession = pin.secondsSinceLastSession;
-      const Verdict v = evaluateDispense(settings_.limits, globalState(), p, chn.runtime, chn.monitor.health(), req);
-      if (v.allowed) {
-        startDose(c, v.ml, req.kind);
-        chn.planner.onDoseStarted();
-        chn.lastLoggedBlock = BlockReason::None;
-        rr_ = (c + 1) % kMaxPlants;
-      } else {
-        chn.planner.onBlocked(in.monoMs);
-        if (v.reason != chn.lastLoggedBlock) {
-          event(EventType::System, c, "blocked", 0,
-                fmt("%s: watering skipped (%s)", plantLabel(c).c_str(), blockReasonName(v.reason)));
-          chn.lastLoggedBlock = v.reason;
-        }
-        if (v.reason == BlockReason::PlantDailyLimit || v.reason == BlockReason::TotalDailyLimit) {
-          raise(AlertCode::DailyLimitReached, Severity::Info, c,
-                fmt("%s reached its daily watering limit.", plantLabel(c).c_str()));
-        }
+  if (planner_.state() == PlannerState::WantPulse && dose_.idle()) {
+    DispenseRequest req;
+    req.kind = planner_.kind();
+    req.continuation = planner_.continuation();
+    req.ml = planner_.pendingMl();
+    req.secondsSinceLastSession = pin.secondsSinceLastSession;
+    Verdict v = evaluateDispense(settings_.limits, nodeState(), p, runtime_, monitor_.health(), req);
+    if (fitToGauge(v)) {
+      startDose(v.ml, req.kind, false);
+      planner_.onDoseStarted();
+      lastLoggedBlock_ = BlockReason::None;
+    } else {
+      planner_.onBlocked(in.monoMs);
+      if (v.reason != lastLoggedBlock_) {
+        event(EventType::System, kPlant, "blocked", 0,
+              fmt("%s: watering skipped (%s)", label().c_str(), blockReasonName(v.reason)));
+        lastLoggedBlock_ = v.reason;
+      }
+      if (v.reason == BlockReason::PlantDailyLimit) {
+        raise(AlertCode::DailyLimitReached, Severity::Info, kPlant,
+              fmt("%s reached its daily watering limit.", label().c_str()));
       }
     }
-
-    if (chn.planner.takeReport(r)) handleReport(c, r, in);
   }
+
+  if (planner_.takeReport(r)) handleReport(r, in);
 }
 
-void Engine::handleReport(int c, const SessionReport& r, const Inputs& in) {
-  Channel& chn = ch_[c];
-  const PlantProfile* p = plantAt(c);
-  if (!p) return;
+void Engine::handleReport(const SessionReport& r, const Inputs& in) {
+  const PlantProfile& p = plant_;
 
   if (r.ml > 0) {
     if (in.timeValid) {
-      chn.runtime.lastSessionEndS = in.now;
-      if (r.kind == SessionKind::Fallback) chn.runtime.lastFallbackS = in.now;
+      runtime_.lastSessionEndS = in.now;
+      if (r.kind == SessionKind::Fallback) runtime_.lastFallbackS = in.now;
     }
-    chn.sessionMono = true;
-    chn.lastSessionMonoMs = in.monoMs;
-    std::string detail =
+    sessionMono_ = true;
+    lastSessionMonoMs_ = in.monoMs;
+    const std::string detail =
         r.kind == SessionKind::Fallback
             ? std::string("Fallback schedule (moisture sensor unavailable)")
             : fmt("%d pulse%s, %.0f%% -> %.0f%%, %s", r.pulses, r.pulses == 1 ? "" : "s", r.startPct, r.endPct,
                   sessionEndName(r.end));
-    event(EventType::Watering, c, sessionKindName(r.kind), r.ml, detail);
+    event(EventType::Watering, kPlant, sessionKindName(r.kind), r.ml, detail);
   }
 
   switch (r.end) {
     case SessionEnd::TargetReached:
-      clear(AlertCode::TargetNotReached, c);
+      clear(AlertCode::TargetNotReached, kPlant);
       break;
     case SessionEnd::LimitReached:
-      if (r.endPct < p->moisture.min) {
-        raise(AlertCode::TargetNotReached, Severity::Warning, c,
-              fmt("%s only reached %.0f%% after %.0f ml (target %.0f%%). Check the sensor position and drainage, "
-                  "or raise its limits.",
-                  plantLabel(c).c_str(), r.endPct, r.ml, sessionTargetPct(*p)));
+      if (r.endPct < p.moisture.min) {
+        raise(AlertCode::TargetNotReached, Severity::Warning, kPlant,
+              fmt("%s only reached %.0f%% after %.0f ml (target %.0f%%). Check the sensor and drainage, or raise "
+                  "its limits.",
+                  label().c_str(), r.endPct, r.ml, sessionTargetPct(p)));
       }
       break;
     case SessionEnd::NoResponse:
-      chn.monitor.reportNoResponse(r.endPct);
-      raise(AlertCode::SensorNoResponse, Severity::Warning, c,
-            fmt("%s's moisture did not rise after %.0f ml. Check that the sensor is in the soil and the water "
-                "reaches the pot. Automatic watering is paused for this plant until the reading rises or you "
-                "clear it.",
-                plantLabel(c).c_str(), r.ml));
+      // The pump felt water moving: the water went somewhere, but the sensor didn't
+      // see it. Otherwise the likeliest cause is an empty bottle.
+      if (pumpMon_.ready() && lastPumpVerdict_ == PumpVerdict::Ok) {
+        monitor_.reportNoResponse(r.endPct);
+        raise(AlertCode::SensorNoResponse, Severity::Warning, kPlant,
+              fmt("%s's moisture did not rise after %.0f ml although the pump moved water. Check the sensor is in "
+                  "the soil and the tube ends in the pot.",
+                  label().c_str(), r.ml));
+      } else {
+        bottle_.markEmpty(EmptyReason::NoResponse);
+        processBottle();
+      }
       break;
     default:
       break;
@@ -624,154 +617,127 @@ void Engine::handleReport(int c, const SessionReport& r, const Inputs& in) {
 
 // ------------------------------------------------------------------ commands
 
-std::string Engine::manualWater(const std::string& plantId, float ml) { return manualDose(plantId, ml, false); }
+std::string Engine::manualWater(float ml) { return manualDose(ml, false); }
 
-std::string Engine::timedRun(const std::string& plantId, float seconds) {
-  const int idx = plantIndex(plantId);
-  if (idx < 0) return "not_found";
+std::string Engine::timedRun(float seconds) {
+  if (!havePlant_) return "no_plant";
   if (!(seconds >= 1 && seconds <= 60)) return "invalid_amount";
-  return manualDose(plantId, seconds * std::max(plants_[idx].outlet.flowMlPerS, 0.05f), true);
+  return manualDose(seconds * effectiveFlow(), true);
 }
 
-std::string Engine::manualDose(const std::string& plantId, float ml, bool timed) {
-  const int idx = plantIndex(plantId);
-  if (idx < 0) return "not_found";
-  const int c = plants_[idx].channel;
-  if (c >= kMaxPlants) return "not_found";
-  if (!dose_.idle()) return "busy";
-  Channel& chn = ch_[c];
-  if (chn.planner.state() != PlannerState::Idle) chn.planner.abort(last_.monoMs);
+std::string Engine::manualDose(float ml, bool timed) {
+  if (!havePlant_) return "no_plant";
+  if (doseActive()) return "busy";
+  if (planner_.state() != PlannerState::Idle) planner_.abort(last_.monoMs);
 
   DispenseRequest req;
   req.kind = SessionKind::Manual;
   req.ml = ml;
-  const Verdict v = evaluateDispense(settings_.limits, globalState(), plants_[idx], chn.runtime, chn.monitor.health(), req);
-  if (!v.allowed) return blockReasonName(v.reason);
-  startDose(c, v.ml, SessionKind::Manual, timed);
+  Verdict v = evaluateDispense(settings_.limits, nodeState(), plant_, runtime_, monitor_.health(), req);
+  if (!fitToGauge(v)) {
+    event(EventType::System, kPlant, "blocked", 0,
+          fmt("%s: %s refused (%s)", label().c_str(), timed ? "timed run" : "watering", blockReasonName(v.reason)));
+    return blockReasonName(v.reason);
+  }
+  pending_ = PendingDose{true, v.ml, timed};
   return "";
 }
 
-void Engine::emergencyStop(const std::string& why) {
-  outlets_.closeAll();
-  if (!dose_.idle()) dose_.abort(last_.monoMs);
-  for (auto& c : ch_) c.planner.abort(last_.monoMs);
-  if (emergencyStop_) return;
-  emergencyStop_ = true;
-  raise(AlertCode::EmergencyStop, Severity::Info, -1, "Emergency stop (" + why + "). Watering is disabled until you resume.");
-  event(EventType::System, -1, "emergency_stop", 0, why);
+void Engine::setStopped(bool stop, const std::string& why) {
+  if (stop) {
+    pump_.off();
+    pending_.active = false;
+    if (!dose_.idle()) dose_.abort(last_.monoMs);
+    planner_.abort(last_.monoMs);
+    if (stopped_) return;
+    stopped_ = true;
+    event(EventType::System, kNode, "emergency_stop", 0, why);
+  } else {
+    if (!stopped_) return;
+    stopped_ = false;
+    event(EventType::System, kNode, "resume", 0, "Watering resumed");
+  }
   persist();
-}
-
-std::string Engine::resume() {
-  if (settings_.leakSensorEnabled && last_.leak) return "leak_still_detected";
-  emergencyStop_ = false;
-  leakLatched_ = false;
-  clear(AlertCode::EmergencyStop, -1);
-  clear(AlertCode::ReservoirUnexplainedLoss, -1);
-  event(EventType::System, -1, "resume", 0, "Watering resumed");
-  persist();
-  return "";
 }
 
 void Engine::setAutomation(bool enabled) {
   if (settings_.automationEnabled == enabled) return;
   settings_.automationEnabled = enabled;
-  if (!enabled) {
-    for (auto& c : ch_) c.planner.abort(last_.monoMs);
-  }
-  event(EventType::System, -1, enabled ? "automation_on" : "automation_off", 0,
-        enabled ? "Automatic watering enabled" : "Automatic watering paused");
+  if (!enabled) planner_.abort(last_.monoMs);
 }
 
-std::string Engine::clearLockout(const std::string& plantId) {
-  const int idx = plantIndex(plantId);
-  if (idx < 0) return "not_found";
-  const int c = plants_[idx].channel;
-  if (c >= kMaxPlants) return "not_found";
-  Channel& chn = ch_[c];
-  chn.runtime.lockedOut = false;
-  chn.monitor.clearNoResponse();
-  clear(AlertCode::OutletNoFlow, c);
-  clear(AlertCode::OutletStuckOpen, c);
-  clear(AlertCode::SensorNoResponse, c);
-  event(EventType::System, c, "lockout_cleared", 0, plantLabel(c) + ": faults cleared by user");
+std::string Engine::clearFaults() {
+  if (!havePlant_) return "no_plant";
+  runtime_.lockedOut = false;
+  monitor_.clearNoResponse();
+  clear(AlertCode::PumpDisconnected, kPlant);
+  clear(AlertCode::PumpJammed, kPlant);
+  clear(AlertCode::SensorNoResponse, kPlant);
+  event(EventType::System, kPlant, "lockout_cleared", 0, label() + ": faults cleared by user");
   persist();
   return "";
 }
 
 void Engine::setSystemAlert(AlertCode code, Severity sev, bool active, const std::string& message) {
   if (active) {
-    raise(code, sev, -1, message);
+    raise(code, sev, kNode, message);
   } else {
-    clear(code, -1);
+    clear(code, kNode);
   }
-}
-
-void Engine::noteManualRefill(float ml) {
-  event(EventType::Refill, -1, "manual_refill", ml, "Refill recorded from the dashboard");
 }
 
 // ------------------------------------------------------------------ status
 
-EngineStatus Engine::status() const {
-  EngineStatus s;
-  s.automationEnabled = settings_.automationEnabled;
-  s.emergencyStop = emergencyStop_;
-  s.leak = leakLatched_ || (settings_.leakSensorEnabled && last_.leak);
-  s.reservoir = reservoir_.status();
-  s.env = last_.env;
-  s.vpdKPa = last_.env.valid ? vpdKPa(last_.env.tempC, last_.env.humidityPct) : 0;
+NodeStatus Engine::status() const {
+  NodeStatus s;
+  s.hasPlant = havePlant_;
+  if (havePlant_) {
+    s.plantId = plant_.id;
+    s.haveMoisture = haveMoisture_;
+    s.moisturePct = moisturePct_;
+    s.raw = raw_;
+    s.health = monitor_.health();
+    s.issue = monitor_.issue();
+    s.planner = planner_.state();
+    const WateringAdjust adj = computeAdjust(plant_, last_.env, last_.localMonth, settings_.southernHemisphere);
+    s.triggerPct = triggerPct(plant_, adj);
+    s.targetPct = sessionTargetPct(plant_);
+    s.mlToday = runtime_.mlToday;
+    s.lastWateredAt = runtime_.lastSessionEndS;
+    s.lockedOut = runtime_.lockedOut;
+    s.mlPerPct = runtime_.mlPerPct;
+    if (planner_.state() == PlannerState::Soaking) {
+      s.soakRemainingMs = std::max<MonoMs>(0, planner_.soakUntil() - last_.monoMs);
+    }
+  }
+  s.bottle = bottle_.status();
   if (!dose_.idle()) {
-    s.dose.active = true;
-    s.dose.channel = dose_.request().channel;
-    if (const PlantProfile* p = plantAt(s.dose.channel)) s.dose.plantId = p->id;
-    s.dose.kind = doseKind_;
-    s.dose.ml = dose_.request().ml;
-    s.dose.dispensedMl = dose_.dispensedMl();
+    s.doseActive = true;
+    s.doseMl = dose_.request().ml;
+    s.doseDispensedMl = dose_.dispensedSoFar(last_.monoMs);
   }
   s.lastDose = lastDose_;
-  s.mlTodayTotal = mlTodayTotal_;
-  for (const auto& p : plants_) {
-    if (p.channel >= kMaxPlants) continue;
-    const Channel& chn = ch_[p.channel];
-    if (chn.plant < 0 || plants_[chn.plant].id != p.id) continue;
-    PlantStatus ps;
-    ps.id = p.id;
-    ps.name = p.name;
-    ps.channel = p.channel;
-    ps.haveMoisture = chn.haveMoisture;
-    ps.moisturePct = chn.moisturePct;
-    ps.raw = chn.raw;
-    ps.health = chn.monitor.health();
-    ps.issue = chn.monitor.issue();
-    ps.planner = chn.planner.state();
-    WateringAdjust adj = computeAdjust(p, last_.env, last_.localMonth, settings_.southernHemisphere);
-    ps.triggerPct = triggerPct(p, adj);
-    ps.targetPct = sessionTargetPct(p);
-    ps.mlToday = chn.runtime.mlToday;
-    ps.lastWateredAt = chn.runtime.lastSessionEndS;
-    ps.lockedOut = chn.runtime.lockedOut;
-    ps.mlPerPct = chn.runtime.mlPerPct;
-    if (chn.planner.state() == PlannerState::Soaking) {
-      ps.soakRemainingMs = std::max<MonoMs>(0, chn.planner.soakUntil() - last_.monoMs);
-    }
-    s.plants.push_back(ps);
+  s.pumpVerdict = lastPumpVerdict_;
+  s.pumpReady = pumpMon_.ready();
+  s.pumpWetMaPerV = pumpMon_.learned().wetMaPerV;
+  s.batteryMv = batteryMv_;
+  s.batteryLow = batteryLow_;
+  s.stopped = stopped_;
+  s.automationEnabled = settings_.automationEnabled;
+  for (const auto& a : alerts_.all()) {
+    if (a.active && a.code < AlertCode::Count) s.activeAlerts |= 1u << static_cast<uint8_t>(a.code);
   }
-  s.alertsCritical = alerts_.countActive(Severity::Critical);
-  s.alertsWarning = alerts_.countActive(Severity::Warning);
-  s.alertsInfo = alerts_.countActive(Severity::Info);
   return s;
 }
 
 PersistedState Engine::persisted() const {
   PersistedState st;
-  for (int c = 0; c < kMaxPlants; ++c) st.plants[c] = ch_[c].runtime;
+  st.plant = runtime_;
+  st.bottle = bottle_.state();
+  st.pump = pumpMon_.learned();
   st.day = day_;
-  st.mlTodayTotal = mlTodayTotal_;
-  st.usagePerDayMl = reservoir_.usagePerDay();
-  st.emergencyStop = emergencyStop_;
+  st.stopped = stopped_;
   st.dispenseInProgress = dispenseInProgress_;
-  st.inProgressChannel = inProgressCh_;
   st.inProgressMl = inProgressMl_;
   return st;
 }
@@ -779,8 +745,25 @@ PersistedState Engine::persisted() const {
 // ------------------------------------------------------------------ helpers
 
 void Engine::raise(AlertCode code, Severity sev, int ch, const std::string& msg) {
-  if (alerts_.raise(code, sev, static_cast<int8_t>(ch), msg, last_.now)) {
-    event(EventType::AlertRaised, ch, alertCodeName(code), 0, msg);
+  bool existed = false;
+  Severity before = Severity::Info;
+  for (const auto& a : alerts_.all()) {
+    if (a.active && a.code == code && a.channel == ch) {
+      existed = true;
+      before = a.severity;
+    }
+  }
+  const bool fresh = alerts_.raise(code, sev, static_cast<int8_t>(ch), msg, last_.now);
+  // Escalations are announced again so the main station sees the new severity.
+  if (fresh || (existed && sev > before)) {
+    Event e;
+    e.ts = last_.now;
+    e.type = EventType::AlertRaised;
+    e.channel = static_cast<int8_t>(ch);
+    e.code = alertCodeName(code);
+    e.detail = msg;
+    e.severity = sev;
+    sink_.onEvent(e);
   }
 }
 

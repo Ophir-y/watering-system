@@ -18,18 +18,18 @@ void test_raise_is_deduplicated_per_code_and_channel() {
 
 void test_clear_and_reraise() {
   AlertManager m;
-  m.raise(AlertCode::ReservoirLow, Severity::Warning, -1, "low", 100);
-  TEST_ASSERT_TRUE(m.clear(AlertCode::ReservoirLow, -1, 200));
-  TEST_ASSERT_FALSE(m.clear(AlertCode::ReservoirLow, -1, 300));
-  TEST_ASSERT_FALSE(m.isActive(AlertCode::ReservoirLow, -1));
-  TEST_ASSERT_TRUE(m.raise(AlertCode::ReservoirLow, Severity::Warning, -1, "low again", 400));
+  m.raise(AlertCode::BottleLow, Severity::Warning, -1, "low", 100);
+  TEST_ASSERT_TRUE(m.clear(AlertCode::BottleLow, -1, 200));
+  TEST_ASSERT_FALSE(m.clear(AlertCode::BottleLow, -1, 300));
+  TEST_ASSERT_FALSE(m.isActive(AlertCode::BottleLow, -1));
+  TEST_ASSERT_TRUE(m.raise(AlertCode::BottleLow, Severity::Warning, -1, "low again", 400));
   TEST_ASSERT_EQUAL(2u, m.all().size());
   TEST_ASSERT_EQUAL(200, m.all()[0].clearedAt);
 }
 
 void test_notifications_and_renotify() {
   AlertManager m;
-  m.raise(AlertCode::LeakDetected, Severity::Critical, -1, "leak", 1000);
+  m.raise(AlertCode::BottleEmpty, Severity::Critical, -1, "empty", 1000);
   m.raise(AlertCode::TempOutOfRange, Severity::Info, 0, "cold", 1000);
   auto due = m.dueNotifications(1000, Severity::Warning);
   TEST_ASSERT_EQUAL(1u, due.size());
@@ -53,9 +53,9 @@ void test_highest_active() {
   AlertManager m;
   Severity s = Severity::Info;
   TEST_ASSERT_FALSE(m.highestActive(s, false));
-  m.raise(AlertCode::ReservoirLow, Severity::Warning, -1, "", 0);
+  m.raise(AlertCode::BottleLow, Severity::Warning, -1, "", 0);
   uint32_t crit = 0;
-  m.raise(AlertCode::LeakDetected, Severity::Critical, -1, "", 0);
+  m.raise(AlertCode::BottleEmpty, Severity::Critical, -1, "", 0);
   for (const auto& a : m.all()) {
     if (a.severity == Severity::Critical) crit = a.id;
   }
@@ -72,16 +72,16 @@ void test_history_is_bounded() {
     m.raise(AlertCode::PlantTooWet, Severity::Warning, 0, "wet", i);
     m.clear(AlertCode::PlantTooWet, 0, i);
   }
-  m.raise(AlertCode::LeakDetected, Severity::Critical, -1, "leak", 30);
+  m.raise(AlertCode::BottleEmpty, Severity::Critical, -1, "empty", 30);
   TEST_ASSERT_EQUAL(6u, m.all().size());
-  TEST_ASSERT_TRUE(m.isActive(AlertCode::LeakDetected, -1));
+  TEST_ASSERT_TRUE(m.isActive(AlertCode::BottleEmpty, -1));
 }
 
 void test_clear_channel() {
   AlertManager m;
   m.raise(AlertCode::PlantTooDry, Severity::Warning, 3, "", 0);
   m.raise(AlertCode::SensorFault, Severity::Warning, 3, "", 0);
-  m.raise(AlertCode::ReservoirLow, Severity::Warning, -1, "", 0);
+  m.raise(AlertCode::BottleLow, Severity::Warning, -1, "", 0);
   m.clearChannel(3, 10);
   TEST_ASSERT_EQUAL(1, m.countActive(Severity::Warning));
 }

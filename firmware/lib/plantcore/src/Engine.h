@@ -1,18 +1,19 @@
-// The control engine: turns sensor snapshots into watering decisions, enforces
-// safety interlocks, tracks faults and alerts. It owns no hardware: outlets are
-// driven through IOutlets and persistence/logging go through IEngineSink, so the
-// whole engine runs unchanged in host tests.
+// The plant node's control engine: turns sensor snapshots into watering decisions
+// for its one plant, enforces the safety rules, keeps the bottle's fuel gauge,
+// judges the pump by its current, and tracks faults and alerts. It owns no
+// hardware: the pump is driven through IPump and persistence/logging go through
+// IEngineSink, so the whole engine runs unchanged in host tests.
 #pragma once
 
 #include <array>
 #include <string>
-#include <vector>
 
 #include "Alerts.h"
+#include "Bottle.h"
 #include "Dose.h"
 #include "EnvModel.h"
 #include "Planner.h"
-#include "Reservoir.h"
+#include "PumpMonitor.h"
 #include "Safety.h"
 #include "SensorMonitor.h"
 #include "Signal.h"
@@ -24,14 +25,23 @@ class IEngineSink {
  public:
   virtual ~IEngineSink() = default;
   virtual void onEvent(const Event& e) = 0;
-  // Must complete before returning: called right before an outlet opens.
+  // Must complete before returning: called right before the pump starts.
   virtual void onPersist(const PersistedState& s) = 0;
 };
 
-struct PlantStatus {
-  std::string id;
-  std::string name;
-  uint8_t channel = 0;
+// The most recent completed dose: used to calibrate the pump flow.
+struct LastDose {
+  bool valid = false;
+  float ml = 0;
+  uint32_t onTimeMs = 0;
+  bool timed = false;
+  DoseFault fault = DoseFault::None;
+  EpochS at = 0;
+};
+
+struct NodeStatus {
+  bool hasPlant = false;
+  std::string plantId;
   bool haveMoisture = false;
   float moisturePct = 0;
   int32_t raw = 0;
@@ -45,49 +55,28 @@ struct PlantStatus {
   bool lockedOut = false;
   float mlPerPct = 0;
   MonoMs soakRemainingMs = 0;
-};
-
-struct DoseStatus {
-  bool active = false;
-  uint8_t channel = 0;
-  std::string plantId;
-  SessionKind kind = SessionKind::Auto;
-  float ml = 0;
-  float dispensedMl = 0;
-};
-
-// The most recent completed dispense: used to calibrate outlet flow.
-struct LastDose {
-  bool valid = false;
-  uint8_t channel = 0;
-  std::string plantId;
-  float ml = 0;
-  uint32_t onTimeMs = 0;
-  bool closedLoop = false;
-  EpochS at = 0;
-};
-
-struct EngineStatus {
-  bool automationEnabled = true;
-  bool emergencyStop = false;
-  bool leak = false;
-  ReservoirStatus reservoir;
-  EnvSnapshot env;
-  float vpdKPa = 0;
-  DoseStatus dose;
+  BottleStatus bottle;
+  bool doseActive = false;
+  float doseMl = 0;
+  float doseDispensedMl = 0;
   LastDose lastDose;
-  float mlTodayTotal = 0;
-  std::vector<PlantStatus> plants;
-  int alertsCritical = 0;
-  int alertsWarning = 0;
-  int alertsInfo = 0;
+  PumpVerdict pumpVerdict = PumpVerdict::Ok;  // of the last run
+  bool pumpReady = false;                     // dry/jam detection learned
+  float pumpWetMaPerV = 0;
+  float batteryMv = 0;
+  bool batteryLow = false;
+  bool stopped = false;
+  bool automationEnabled = true;
+  uint32_t activeAlerts = 0;  // bit (1 << AlertCode) per active alert
 };
 
 constexpr MonoMs kRecentlyWateredMs = 30LL * 60 * 1000;
 constexpr MonoMs kEnvAlertAfterMs = 2LL * 3600 * 1000;
 constexpr MonoMs kTooWetAfterMs = 48LL * 3600 * 1000;
-constexpr MonoMs kScaleFaultAfterMs = 30000;
+constexpr MonoMs kSessionSampleMs = 60000;   // sample every minute during a session
 constexpr float kDetectedWateringRisePct = 8.0f;
+constexpr float kPumpLearnMinBottlePct = 15; // the gauge must think there is water to learn the wet current
+constexpr float kBatteryRecoverMv = 150;     // hysteresis for the battery alerts
 
 const char* sessionKindName(SessionKind k);
 const char* sessionEndName(SessionEnd e);
@@ -95,109 +84,123 @@ const char* plannerStateName(PlannerState s);
 
 class Engine {
  public:
-  Engine(IOutlets& outlets, IEngineSink& sink);
+  Engine(IPump& pump, IEngineSink& sink);
 
-  // Apply settings and plant profiles. Safe to call at any time; channels whose
-  // plant changed lose their per-plant runtime.
-  void configure(const Settings& settings, const std::vector<PlantProfile>& plants);
-  // Restore persisted state once at boot, before the first tick.
+  // Apply settings and the plant profile (nullptr: the node has no plant yet). Safe to
+  // call at any time; a different plant id resets the per-plant runtime, while the
+  // bottle and pump state stay (they belong to the hardware).
+  void configure(const Settings& settings, const PlantProfile* plant);
+  // Restore persisted state once at boot, after configure and before the first tick.
   void restore(const PersistedState& state, const Inputs& in);
   void tick(const Inputs& in);
 
-  // Commands. Return "" on success, otherwise a short error code.
-  std::string manualWater(const std::string& plantId, float ml);
-  // Opens the outlet for a fixed time (open loop) so its flow can be measured.
-  std::string timedRun(const std::string& plantId, float seconds);
-  void emergencyStop(const std::string& why);
-  std::string resume();
+  // Commands. Return "" on success, otherwise a short error code. An accepted dose
+  // starts on the next tick (which is when the pump's clock is known).
+  std::string manualWater(float ml);
+  // Runs the pump for a fixed time so its flow can be measured into a cup. The water
+  // leaves the bottle but does not count as watering the plant.
+  std::string timedRun(float seconds);
+  std::string clearFaults();
+  void refilled(float ml);  // ml <= 0: filled to capacity
+  void setStopped(bool stopped, const std::string& why);
   void setAutomation(bool enabled);
-  std::string clearLockout(const std::string& plantId);
-  bool ackAlert(uint32_t id) { return alerts_.ack(id); }
-  // System-level conditions detected outside the engine (SD card, clock, resets...).
+  // Node-level conditions detected outside the engine (resets, ...).
   void setSystemAlert(AlertCode code, Severity sev, bool active, const std::string& message);
-  void noteManualRefill(float ml);
 
-  EngineStatus status() const;
-  const AlertManager& alerts() const { return alerts_; }
-  AlertManager& alerts() { return alerts_; }
+  NodeStatus status() const;
   PersistedState persisted() const;
+  const AlertManager& alerts() const { return alerts_; }
   const Settings& settings() const { return settings_; }
-  const std::vector<PlantProfile>& plants() const { return plants_; }
-  int plantIndex(const std::string& id) const;
-  bool doseActive() const { return !dose_.idle(); }
-  bool emergencyStopped() const { return emergencyStop_; }
+  bool hasPlant() const { return havePlant_; }
+  const PlantProfile& plant() const { return plant_; }
+  bool doseActive() const { return !dose_.idle() || pending_.active; }
+  bool pumpRunning() const { return dose_.running(); }
+  bool stopped() const { return stopped_; }
+  // When the engine next needs a tick: -1 = nothing before the next regular check-in.
+  MonoMs wantTickBy(MonoMs now) const;
 
  private:
-  struct Channel {
-    int plant = -1;  // index into plants_, -1 = unused
-    SensorMonitor monitor;
-    Ema ema{0.3f};
-    Planner planner;
-    PlantRuntime runtime;
-    bool haveMoisture = false;
-    float moisturePct = 0;
-    int32_t raw = 0;
-    std::array<float, 3> trendPct{};  // last three smoothed readings, oldest first
-    std::array<MonoMs, 3> trendMs{};
-    int trendN = 0;
-    float trendPctPerMin = 0;
-    MonoMs lastSampleMs = 0;
-    MonoMs lastDoseEndMs = -kRecentlyWateredMs;
-    bool sessionMono = false;  // lastSessionMonoMs valid
-    MonoMs lastSessionMonoMs = 0;
-    MonoMs wetSinceMs = -1;
-    MonoMs tempOutSinceMs = -1;
-    MonoMs humOutSinceMs = -1;
-    BlockReason lastLoggedBlock = BlockReason::None;
-  };
-
-  static void pushTrend(Channel& chn, float pct, MonoMs now);
+  static void pushTrend(float pct, MonoMs now, std::array<float, 3>& pcts, std::array<MonoMs, 3>& ms, int& n,
+                        float& rate);
+  void resetPlant();
   void rolloverDay(const Inputs& in);
-  void handleInterlocks(const Inputs& in);
+  void processBattery(const Inputs& in);
   void processMoisture(const Inputs& in);
   void processEnvironment(const Inputs& in);
-  void processReservoir(const Inputs& in);
+  void processBottle();
   void stepDose(const Inputs& in);
-  void stepPlanners(const Inputs& in);
-  void handleReport(int ch, const SessionReport& r, const Inputs& in);
-  void startDose(int ch, float ml, SessionKind kind, bool openLoop = false);
-  std::string manualDose(const std::string& plantId, float ml, bool timed);
+  void finishDose(const Inputs& in);
+  void stepPlanner(const Inputs& in);
+  void handleReport(const SessionReport& r, const Inputs& in);
+  void startDose(float ml, SessionKind kind, bool timed);
+  std::string manualDose(float ml, bool timed);
 
-  bool sensorUsable(int ch, const Inputs& in) const;
-  float secondsSinceLastSession(int ch, const Inputs& in) const;
-  float effectiveFlow(const PlantProfile& p) const;
-  GlobalState globalState() const;
+  bool sensorUsable(const Inputs& in) const;
+  float secondsSinceLastSession(const Inputs& in) const;
+  float effectiveFlow() const;
+  // Caps an allowed dose to the water the gauge says is above the reserve.
+  bool fitToGauge(Verdict& v);
+  NodeState nodeState() const;
 
   void raise(AlertCode code, Severity sev, int ch, const std::string& msg);
   void clear(AlertCode code, int ch);
   void event(EventType type, int ch, const std::string& code, float ml, const std::string& detail);
   void persist();
-  const PlantProfile* plantAt(int ch) const;
-  std::string plantLabel(int ch) const;
+  std::string label() const;
 
-  IOutlets& outlets_;
+  IPump& pump_;
   IEngineSink& sink_;
   Settings settings_;
-  std::vector<PlantProfile> plants_;
-  std::array<Channel, kMaxPlants> ch_{};
+  PlantProfile plant_;
+  bool havePlant_ = false;
+
+  // The plant.
+  SensorMonitor monitor_;
+  Ema ema_{0.3f};
+  Planner planner_;
+  PlantRuntime runtime_;
+  bool haveMoisture_ = false;
+  float moisturePct_ = 0;
+  int32_t raw_ = 0;
+  std::array<float, 3> trendPct_{};  // last three smoothed readings, oldest first
+  std::array<MonoMs, 3> trendMs_{};
+  int trendN_ = 0;
+  float trendPctPerMin_ = 0;
+  MonoMs lastSampleMs_ = 0;
+  MonoMs lastDoseEndMs_ = -kRecentlyWateredMs;
+  bool sessionMono_ = false;  // lastSessionMonoMs_ valid
+  MonoMs lastSessionMonoMs_ = 0;
+  MonoMs wetSinceMs_ = -1;
+  MonoMs tempOutSinceMs_ = -1;
+  MonoMs humOutSinceMs_ = -1;
+  BlockReason lastLoggedBlock_ = BlockReason::None;
+
+  // The hardware.
+  struct PendingDose {
+    bool active = false;
+    float ml = 0;
+    bool timed = false;
+  };
+  PendingDose pending_;  // accepted manual dose, started by the next tick
   DoseController dose_;
   SessionKind doseKind_ = SessionKind::Auto;
   bool doseTimed_ = false;
   LastDose lastDose_;
-  ReservoirModel reservoir_;
-  AlertManager alerts_;
-  Inputs last_;
+  BottleModel bottle_;
+  PumpMonitor pumpMon_;
+  PumpVerdict lastPumpVerdict_ = PumpVerdict::Ok;
+  float batteryMv_ = 0;
+  bool batteryLow_ = false;
+  bool batteryCritical_ = false;
+  MonoMs batteryQuietUntilMs_ = 0;  // the cells recover for a moment after pumping
 
+  AlertManager alerts_{10};
+  Inputs last_;
   int32_t day_ = 0;
   MonoMs lastRolloverMs_ = 0;
-  float mlTodayTotal_ = 0;
-  bool emergencyStop_ = false;
-  bool leakLatched_ = false;
+  bool stopped_ = false;
   bool dispenseInProgress_ = false;
-  uint8_t inProgressCh_ = 0;
   float inProgressMl_ = 0;
-  MonoMs scaleBadSinceMs_ = -1;
-  int rr_ = 0;  // round-robin start for fairness between plants
 };
 
 }  // namespace plantcore

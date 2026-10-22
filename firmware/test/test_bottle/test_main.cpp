@@ -1,165 +1,175 @@
+// The bottle's fuel gauge: counting, refills, empty detection and flow self-calibration.
 #include <unity.h>
 
-#include "Reservoir.h"
+#include "Bottle.h"
 
 using namespace plantcore;
 
 void setUp() {}
 void tearDown() {}
 
-struct Rig {
-  ReservoirModel model;
-  MonoMs now = 0;
-  float grams = 3000;
-  bool floatLow = false;
-  bool dosing = false;
-  bool scaleOk = true;
-  ReservoirEvent last;
-  int events = 0;
+static BottleModel bottle(float capacity = 1000) {
+  BottleConfig cfg;
+  cfg.capacityMl = capacity;
+  cfg.lowPct = 25;
+  cfg.reserveMl = 50;
+  BottleModel b;
+  b.configure(cfg);
+  return b;
+}
 
-  Rig() {
-    ReservoirConfig cfg;
-    cfg.capacityMl = 5000;
-    model.configure(cfg);
-  }
-  void run(MonoMs ms, MonoMs step = 1000) {
-    for (MonoMs t = 0; t < ms; t += step) {
-      now += step;
-      model.update(now, scaleOk, grams, floatLow, dosing);
-      ReservoirEvent e;
-      if (model.takeEvent(e)) {
-        last = e;
-        events++;
-      }
-    }
-  }
-};
-
-void test_status_levels() {
-  Rig r;
-  r.run(15000);
-  ReservoirStatus s = r.model.status();
-  TEST_ASSERT_TRUE(s.scaleValid);
-  TEST_ASSERT_FLOAT_WITHIN(0.1f, 60.0f, s.pct);
+void test_new_bottle_assumed_full() {
+  BottleModel b = bottle();
+  BottleStatus s = b.status();
+  TEST_ASSERT_EQUAL_FLOAT(1000, s.ml);
+  TEST_ASSERT_EQUAL_FLOAT(100, s.pct);
   TEST_ASSERT_FALSE(s.low);
   TEST_ASSERT_FALSE(s.empty);
-  r.grams = 900;
-  r.run(1000);
-  TEST_ASSERT_TRUE(r.model.status().low);
-  r.grams = 100;
-  r.run(1000);
-  TEST_ASSERT_TRUE(r.model.status().empty);
+  TEST_ASSERT_FALSE(b.state().knownFull);  // not confirmed: flow is not learned from this cycle
 }
 
-void test_float_switch_overrides_scale() {
-  Rig r;
-  r.floatLow = true;
-  r.run(15000);
-  ReservoirStatus s = r.model.status();
-  TEST_ASSERT_TRUE(s.empty);
-  TEST_ASSERT_TRUE(s.disagree);  // scale says 60 %
+void test_counts_what_was_pumped() {
+  BottleModel b = bottle();
+  b.dispensed(120, 120);
+  b.dispensed(80, 80);
+  TEST_ASSERT_EQUAL_FLOAT(800, b.status().ml);
+  TEST_ASSERT_EQUAL_FLOAT(80, b.status().pct);
+  b.dispensed(5000, 5000);
+  TEST_ASSERT_EQUAL_FLOAT(0, b.status().ml);  // never negative
+  TEST_ASSERT_TRUE(b.belowReserve());
 }
 
-void test_refill_detected() {
-  Rig r;
-  r.run(15000);
-  r.grams = 4500;
-  r.run(15000);
-  TEST_ASSERT_EQUAL(1, r.events);
-  TEST_ASSERT_EQUAL(ReservoirEventType::Refill, r.last.type);
-  TEST_ASSERT_FLOAT_WITHIN(1, 1500, r.last.ml);
+void test_low_by_level_or_forecast() {
+  BottleModel b = bottle();
+  b.dispensed(760, 760);  // 24 %
+  TEST_ASSERT_TRUE(b.status().low);
+
+  BottleModel c = bottle();
+  c.onDayRollover(600);  // a thirsty plant: 600 ml a day
+  TEST_ASSERT_FALSE(c.status().low);  // a full bottle is never "low", even for 1.7 days
+  c.dispensed(600, 600); // 40 % left, under 2 days
+  BottleStatus s = c.status();
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.667f, s.daysLeft);
+  TEST_ASSERT_TRUE(s.low);
 }
 
-void test_lift_off_and_refill_is_not_a_leak() {
-  Rig r;
-  r.run(15000);
-  r.grams = -400;  // container lifted: net weight goes negative
-  r.run(30000);
-  TEST_ASSERT_TRUE(r.model.status().empty);
-  r.grams = 4800;
-  r.run(15000);
-  TEST_ASSERT_EQUAL(1, r.events);
-  TEST_ASSERT_EQUAL(ReservoirEventType::Refill, r.last.type);
-  TEST_ASSERT_FALSE(r.model.status().empty);
+void test_refill_resets_and_clears_empty() {
+  BottleModel b = bottle();
+  b.dispensed(990, 990);
+  TEST_ASSERT_TRUE(b.markEmpty(EmptyReason::Gauge));
+  TEST_ASSERT_FALSE(b.markEmpty(EmptyReason::Gauge));  // already empty
+  TEST_ASSERT_TRUE(b.status().empty);
+  TEST_ASSERT_EQUAL(EmptyReason::Gauge, b.status().reason);
+  b.refilled(0);
+  TEST_ASSERT_FALSE(b.status().empty);
+  TEST_ASSERT_EQUAL_FLOAT(1000, b.status().ml);
+  TEST_ASSERT_TRUE(b.state().knownFull);
 }
 
-void test_dispensing_is_not_a_leak() {
-  Rig r;
-  r.run(15000);
-  r.dosing = true;
-  r.grams -= 150;
-  r.run(20000);
-  r.dosing = false;
-  r.model.accountDispensed(150);
-  r.run(60000);
-  TEST_ASSERT_EQUAL(0, r.events);
+void test_partial_top_up() {
+  BottleModel b = bottle();
+  b.refilled(0);
+  b.dispensed(700, 700);
+  b.refilled(300);
+  TEST_ASSERT_EQUAL_FLOAT(600, b.status().ml);
+  TEST_ASSERT_FALSE(b.state().knownFull);
 }
 
-void test_fast_unexplained_loss() {
-  Rig r;
-  r.run(15000);
-  r.grams -= 100;  // e.g. a valve stuck open draining quickly
-  r.run(40000);
-  TEST_ASSERT_EQUAL(1, r.events);
-  TEST_ASSERT_EQUAL(ReservoirEventType::UnexplainedLoss, r.last.type);
+void test_pump_dry_from_full_learns_a_faster_pump() {
+  BottleModel b = bottle();
+  b.refilled(0);
+  // The pump really moves 1.25x its nominal flow: the gauge only counted 800 ml
+  // when the whole litre had gone.
+  for (int i = 0; i < 8; ++i) b.dispensed(100, 100);
+  TEST_ASSERT_EQUAL_FLOAT(200, b.status().ml);
+  b.markEmpty(EmptyReason::PumpDry);
+  // Half way towards the observed 1.25 in one cycle.
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.125f, b.flowFactor());
+  TEST_ASSERT_EQUAL_FLOAT(0, b.status().ml);
 }
 
-void test_slow_leak_accumulates() {
-  Rig r;
-  r.run(15000);
-  // 1 ml every 6 s = 10 ml/min: never fast, but adds up within minutes
-  for (int i = 0; i < 120 && r.events == 0; ++i) {
-    r.grams -= 1;
-    r.run(6000);
+void test_pump_dry_from_full_learns_a_slower_pump() {
+  BottleModel b = bottle();
+  b.refilled(0);
+  // The gauge counted 1250 ml (already "empty" for a while) before the pump ran dry.
+  for (int i = 0; i < 10; ++i) b.dispensed(125, 125);
+  b.markEmpty(EmptyReason::PumpDry);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.9f, b.flowFactor());
+}
+
+void test_no_learning_without_a_confirmed_full_cycle() {
+  BottleModel b = bottle();  // never confirmed full
+  for (int i = 0; i < 8; ++i) b.dispensed(100, 100);
+  b.markEmpty(EmptyReason::PumpDry);
+  TEST_ASSERT_EQUAL_FLOAT(1, b.flowFactor());
+
+  b.refilled(0);
+  b.dispensed(100, 100);  // too little pumped to judge
+  b.markEmpty(EmptyReason::PumpDry);
+  TEST_ASSERT_EQUAL_FLOAT(1, b.flowFactor());
+
+  b.refilled(0);
+  for (int i = 0; i < 8; ++i) b.dispensed(100, 100);
+  b.markEmpty(EmptyReason::NoResponse);  // not certain it is empty: no learning
+  TEST_ASSERT_EQUAL_FLOAT(1, b.flowFactor());
+}
+
+void test_flow_factor_is_bounded() {
+  BottleModel b = bottle();
+  for (int cycle = 0; cycle < 10; ++cycle) {
+    b.refilled(0);
+    b.dispensed(310, 310);  // claims the bottle held 3x more than it did
+    b.markEmpty(EmptyReason::PumpDry);
   }
-  TEST_ASSERT_EQUAL(1, r.events);
-  TEST_ASSERT_EQUAL(ReservoirEventType::UnexplainedLoss, r.last.type);
+  TEST_ASSERT_TRUE(b.flowFactor() <= kFlowFactorMax);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, kFlowFactorMax, b.flowFactor());
 }
 
-void test_evaporation_does_not_alarm() {
-  Rig r;
-  r.run(15000);
-  // 2 ml/hour for 2 days, sampled every minute
-  for (int i = 0; i < 48 * 60; ++i) {
-    r.grams -= 2.0f / 60.0f;
-    r.run(60000, 60000);
-  }
-  TEST_ASSERT_EQUAL(0, r.events);
+void test_restore_keeps_state() {
+  BottleModel b = bottle();
+  b.refilled(0);
+  b.dispensed(300, 250);
+  BottleState saved = b.state();
+  BottleModel c = bottle();
+  c.restore(saved);
+  TEST_ASSERT_EQUAL_FLOAT(700, c.status().ml);
+  TEST_ASSERT_EQUAL_FLOAT(250, c.state().pumpedSinceRefillMl);
+  TEST_ASSERT_TRUE(c.state().knownFull);
+
+  BottleState unset;  // ml = -1: never set
+  c.restore(unset);
+  TEST_ASSERT_EQUAL_FLOAT(1000, c.status().ml);
 }
 
-void test_scale_failure() {
-  Rig r;
-  r.run(15000);
-  r.scaleOk = false;
-  r.run(1000);
-  ReservoirStatus s = r.model.status();
-  TEST_ASSERT_FALSE(s.scaleValid);
-  TEST_ASSERT_FALSE(s.empty);  // unknown, the float switch still guards
+void test_capacity_change_clamps_level() {
+  BottleModel b = bottle(1000);
+  BottleConfig smaller;
+  smaller.capacityMl = 600;
+  b.configure(smaller);
+  TEST_ASSERT_EQUAL_FLOAT(600, b.status().ml);
 }
 
 void test_usage_forecast() {
-  Rig r;
-  r.run(15000);
-  r.model.onDayRollover(300);
-  r.model.onDayRollover(300);
-  TEST_ASSERT_FLOAT_WITHIN(0.1f, 300, r.model.usagePerDay());
-  TEST_ASSERT_FLOAT_WITHIN(0.1f, 10, r.model.status().daysLeft);
-  r.grams = 500;
-  r.run(1000);
-  TEST_ASSERT_TRUE(r.model.status().low);  // < 2 days left
+  BottleModel b = bottle();
+  b.onDayRollover(200);
+  b.onDayRollover(100);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 170.0f, b.state().usagePerDayMl);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 1000.0f / 170.0f, b.status().daysLeft);
 }
 
 int main() {
   UNITY_BEGIN();
-  RUN_TEST(test_status_levels);
-  RUN_TEST(test_float_switch_overrides_scale);
-  RUN_TEST(test_refill_detected);
-  RUN_TEST(test_lift_off_and_refill_is_not_a_leak);
-  RUN_TEST(test_dispensing_is_not_a_leak);
-  RUN_TEST(test_fast_unexplained_loss);
-  RUN_TEST(test_slow_leak_accumulates);
-  RUN_TEST(test_evaporation_does_not_alarm);
-  RUN_TEST(test_scale_failure);
+  RUN_TEST(test_new_bottle_assumed_full);
+  RUN_TEST(test_counts_what_was_pumped);
+  RUN_TEST(test_low_by_level_or_forecast);
+  RUN_TEST(test_refill_resets_and_clears_empty);
+  RUN_TEST(test_partial_top_up);
+  RUN_TEST(test_pump_dry_from_full_learns_a_faster_pump);
+  RUN_TEST(test_pump_dry_from_full_learns_a_slower_pump);
+  RUN_TEST(test_no_learning_without_a_confirmed_full_cycle);
+  RUN_TEST(test_flow_factor_is_bounded);
+  RUN_TEST(test_restore_keeps_state);
+  RUN_TEST(test_capacity_change_clamps_level);
   RUN_TEST(test_usage_forecast);
   return UNITY_END();
 }

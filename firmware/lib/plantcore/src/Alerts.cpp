@@ -6,17 +6,15 @@ namespace plantcore {
 
 const char* alertCodeName(AlertCode code) {
   switch (code) {
-    case AlertCode::ReservoirLow: return "reservoir_low";
-    case AlertCode::ReservoirEmpty: return "reservoir_empty";
-    case AlertCode::ReservoirUnexplainedLoss: return "reservoir_unexplained_loss";
-    case AlertCode::FloatScaleDisagree: return "float_scale_disagree";
-    case AlertCode::ScaleFault: return "scale_fault";
-    case AlertCode::LeakDetected: return "leak_detected";
+    case AlertCode::BottleLow: return "bottle_low";
+    case AlertCode::BottleEmpty: return "bottle_empty";
+    case AlertCode::PumpDisconnected: return "pump_disconnected";
+    case AlertCode::PumpJammed: return "pump_jammed";
+    case AlertCode::BatteryLow: return "battery_low";
+    case AlertCode::NodeOffline: return "node_offline";
     case AlertCode::EmergencyStop: return "emergency_stop";
     case AlertCode::SensorFault: return "sensor_fault";
     case AlertCode::SensorNoResponse: return "sensor_no_response";
-    case AlertCode::OutletNoFlow: return "outlet_no_flow";
-    case AlertCode::OutletStuckOpen: return "outlet_stuck_open";
     case AlertCode::PlantTooDry: return "plant_too_dry";
     case AlertCode::PlantTooWet: return "plant_too_wet";
     case AlertCode::TargetNotReached: return "target_not_reached";
@@ -32,6 +30,16 @@ const char* alertCodeName(AlertCode code) {
     case AlertCode::Count: break;
   }
   return "unknown";
+}
+
+bool parseAlertCode(const std::string& name, AlertCode& out) {
+  for (uint8_t i = 0; i < static_cast<uint8_t>(AlertCode::Count); ++i) {
+    if (name == alertCodeName(static_cast<AlertCode>(i))) {
+      out = static_cast<AlertCode>(i);
+      return true;
+    }
+  }
+  return false;
 }
 
 const char* severityName(Severity s) {

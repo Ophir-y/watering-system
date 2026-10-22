@@ -11,18 +11,26 @@
     {
       "ts": 1767250000,
       "type": "alert",
-      "plantId": null,
-      "code": "reservoir_low",
+      "plantId": "monstera",
+      "code": "bottle_low",
       "ml": 0,
-      "detail": "The reservoir is low: 900 ml (18%), about 1.9 days left."
+      "detail": "Monstera's bottle is low: about 300 ml (20%), about 1.9 days left."
     },
     {
       "ts": 1767240000,
       "type": "refill",
-      "plantId": null,
+      "plantId": "monstera",
       "code": "refill",
-      "ml": 3800,
-      "detail": "Reservoir refilled (+3800 ml)"
+      "ml": 1500,
+      "detail": "Bottle refilled"
+    },
+    {
+      "ts": 1767230000,
+      "type": "system",
+      "plantId": null,
+      "code": "automation_off",
+      "ml": 0,
+      "detail": "Automatic watering paused"
     }
   ]
 }

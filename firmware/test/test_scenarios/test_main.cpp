@@ -1,7 +1,8 @@
-// Multi-day simulations of the whole engine against simulated plants and a reservoir.
+// Multi-day simulations of whole plant nodes: plant, bottle, pump and engine.
 #include <unity.h>
 
 #include <map>
+#include <memory>
 
 #include "../sim.h"
 
@@ -15,186 +16,199 @@ static const MonoMs kMin = 60000;
 static const MonoMs kHour = 60 * kMin;
 static const MonoMs kDay = 24 * kHour;
 
-struct Tracker {
-  std::vector<float> maxOver;   // worst (true moisture - band.max)
-  std::vector<float> minUnder;  // worst (true moisture - band.critical), after warm-up
-  explicit Tracker(size_t n) : maxOver(n, -1000), minUnder(n, 1000) {}
+// One node: its world, its engine and what it logged.
+struct Node {
+  World world;
+  RecordingSink sink;
+  Engine engine{world, sink};
+  PlantProfile plant;
+  float maxOver = -1000;   // worst (true moisture - band.max)
+  float minUnder = 1000;   // worst (true moisture - band.critical), after warm-up
+  int refills = 0;
+
+  explicit Node(PlantProfile p) : plant(std::move(p)) {}
+  void start(const Settings& s) {
+    engine.configure(s, &plant);
+    engine.restore(PersistedState{}, world.inputs());
+  }
+  // A person who refills the bottle when the node says it is low, and presses the button.
+  void careTaker() {
+    const bool asked = engine.alerts().isActive(AlertCode::BottleLow, 0) ||
+                       engine.alerts().isActive(AlertCode::BottleEmpty, 0);
+    if (asked && !engine.doseActive()) {
+      world.bottleMl = plant.bottle.capacityMl;
+      engine.refilled(0);
+      refills++;
+    }
+  }
+  void step(MonoMs warmupUntil, bool refill) {
+    engine.tick(world.inputs());
+    maxOver = std::max(maxOver, world.plant.moisture - plant.moisture.max);
+    if (world.now > warmupUntil) minUnder = std::min(minUnder, world.plant.moisture - plant.moisture.critical);
+    if (refill) careTaker();
+    const bool busy = engine.doseActive() || world.pumpOn;
+    world.advance(busy ? 100 : 10000);
+  }
+  void simulate(MonoMs duration, bool refill = true, MonoMs warmup = kDay) {
+    const MonoMs end = world.now + duration;
+    while (world.now < end) step(warmup, refill);
+  }
 };
 
-// Runs the simulation, refilling the reservoir like a person would when it gets low.
-static void simulate(World& w, Engine& e, const std::vector<PlantProfile>& plants, MonoMs duration, Tracker& t,
-                     MonoMs warmup = kDay) {
-  const MonoMs end = w.now + duration;
-  while (w.now < end) {
-    e.tick(w.inputs());
-    for (size_t i = 0; i < plants.size(); ++i) {
-      t.maxOver[i] = std::max(t.maxOver[i], w.plants[i].moisture - plants[i].moisture.max);
-      if (w.now > warmup) t.minUnder[i] = std::min(t.minUnder[i], w.plants[i].moisture - plants[i].moisture.critical);
-    }
-    if (w.reservoirMl < 800 && !e.doseActive()) w.reservoirMl = 5000;
-    bool busy = e.doseActive() || w.openChannel >= 0;
-    w.advance(busy ? 250 : 10000);
-  }
-}
-
-static std::map<std::pair<int, int64_t>, float> dailyTotals(const RecordingSink& sink) {
-  std::map<std::pair<int, int64_t>, float> out;
+static std::map<int64_t, float> dailyTotals(const RecordingSink& sink) {
+  std::map<int64_t, float> out;
   for (const auto& ev : sink.events) {
-    if (ev.type == EventType::Watering) out[{ev.channel, ev.ts / 86400}] += ev.ml;
+    if (ev.type == EventType::Watering) out[ev.ts / 86400] += ev.ml;
   }
   return out;
 }
 
 void test_month_with_mixed_plants_stays_in_band() {
-  World w(4);
-  RecordingSink sink;
-  Engine e(w, sink);
-  Settings s = w.settings();
+  std::vector<std::unique_ptr<Node>> nodes;
 
-  std::vector<PlantProfile> plants;
-  PlantProfile fern = makePlant("fern", 0);
-  plants.push_back(fern);
-  w.plants[0].dryPctPerHour = 0.6f;
-  w.plants[0].mlPerPct = 12;
+  PlantProfile fern = makePlant("fern");
+  nodes.push_back(std::make_unique<Node>(fern));
+  nodes.back()->world.plant.dryPctPerHour = 0.6f;
+  nodes.back()->world.plant.mlPerPct = 12;
 
-  PlantProfile pothos = makePlant("pothos", 1);
+  PlantProfile pothos = makePlant("pothos");
   pothos.style = WateringStyle::DryBetween;
   pothos.moisture = {15, 25, 50, 70};
-  plants.push_back(pothos);
-  w.plants[1].dryPctPerHour = 0.3f;
+  nodes.push_back(std::make_unique<Node>(pothos));
+  nodes.back()->world.plant.dryPctPerHour = 0.3f;
 
-  PlantProfile succulent = makePlant("succulent", 2);
+  PlantProfile succulent = makePlant("succulent");
   succulent.style = WateringStyle::SoakAndDry;
   succulent.moisture = {5, 12, 40, 62};
   succulent.potVolumeMl = 1000;
   succulent.minIntervalH = 48;
-  plants.push_back(succulent);
-  w.plants[2].dryPctPerHour = 0.15f;
-  w.plants[2].mlPerPct = 6;
-  w.plants[2].moisture = 30;
+  succulent.bottle.capacityMl = 500;
+  nodes.push_back(std::make_unique<Node>(succulent));
+  nodes.back()->world.plant.dryPctPerHour = 0.15f;
+  nodes.back()->world.plant.mlPerPct = 6;
+  nodes.back()->world.plant.moisture = 30;
+  nodes.back()->world.bottleMl = 500;
 
-  PlantProfile basil = makePlant("basil", 3);
+  PlantProfile basil = makePlant("basil");
   basil.moisture = {25, 40, 60, 80};
   basil.maxDailyMl = 800;
-  plants.push_back(basil);
-  w.plants[3].dryPctPerHour = 1.2f;
-  w.plants[3].mlPerPct = 8;
+  basil.bottle.capacityMl = 2000;
+  nodes.push_back(std::make_unique<Node>(basil));
+  nodes.back()->world.plant.dryPctPerHour = 1.2f;
+  nodes.back()->world.plant.mlPerPct = 8;
+  nodes.back()->world.bottleMl = 2000;
+  nodes.back()->world.flowMlPerS = 2.3f;  // a stronger pump than its profile says
 
-  e.configure(s, plants);
-  e.restore(PersistedState{}, w.inputs());
-  Tracker t(plants.size());
-  simulate(w, e, plants, 30 * kDay, t);
+  for (auto& n : nodes) {
+    n->start(Settings{});
+    n->simulate(30 * kDay);
+  }
 
-  for (size_t i = 0; i < plants.size(); ++i) {
-    char msg[96];
-    snprintf(msg, sizeof msg, "%s: max over band %.1f, min above critical %.1f", plants[i].id.c_str(), t.maxOver[i],
-             t.minUnder[i]);
-    TEST_ASSERT_TRUE_MESSAGE(t.maxOver[i] <= 3.0f, msg);   // never meaningfully overwatered
-    TEST_ASSERT_TRUE_MESSAGE(t.minUnder[i] >= 0.0f, msg);  // never left below critical
+  for (auto& n : nodes) {
+    char msg[128];
+    snprintf(msg, sizeof msg, "%s: max over band %.1f, min above critical %.1f", n->plant.id.c_str(), n->maxOver,
+             n->minUnder);
+    TEST_ASSERT_TRUE_MESSAGE(n->maxOver <= 3.0f, msg);   // never meaningfully overwatered
+    TEST_ASSERT_TRUE_MESSAGE(n->minUnder >= 0.0f, msg);  // never left below critical
+    for (const auto& kv : dailyTotals(n->sink)) TEST_ASSERT_TRUE(kv.second <= n->plant.maxDailyMl + 1);
+    TEST_ASSERT_EQUAL(0, n->engine.alerts().countActive(Severity::Critical));
   }
-  for (const auto& kv : dailyTotals(sink)) {
-    const PlantProfile& p = plants[kv.first.first];
-    TEST_ASSERT_TRUE(kv.second <= p.maxDailyMl + 1);
-  }
-  TEST_ASSERT_TRUE(sink.count(EventType::Refill) > 0);
-  TEST_ASSERT_EQUAL(0, e.alerts().countActive(Severity::Critical));
-  // The thirsty basil needs far more water than the succulent.
-  TEST_ASSERT_TRUE(sink.wateredMl(3) > 4 * sink.wateredMl(2));
+  // The thirsty basil needs far more water (and refills) than the succulent.
+  TEST_ASSERT_TRUE(nodes[3]->sink.wateredMl() > 4 * nodes[2]->sink.wateredMl());
+  TEST_ASSERT_TRUE(nodes[3]->refills > nodes[2]->refills);
+  TEST_ASSERT_TRUE(nodes[3]->refills >= 3);
 }
 
-void test_gravity_valves_as_reservoir_drains() {
-  World w(2);
-  w.gravity = true;
-  w.reservoirMl = 5000;
-  w.flowMlPerS = {3.0f, 3.0f};  // at full head
-  RecordingSink sink;
-  Engine e(w, sink);
-  Settings s = w.settings();
-  std::vector<PlantProfile> plants{makePlant("a", 0), makePlant("b", 1)};
-  for (auto& p : plants) {
-    p.outlet.type = OutletType::Valve;
-    p.outlet.flowMlPerS = 3.0f;
-    p.outlet.calFillPct = 100;
-    p.outlet.dropMm = 300;
-  }
-  w.plants[0].dryPctPerHour = w.plants[1].dryPctPerHour = 1.5f;
-  e.configure(s, plants);
-  e.restore(PersistedState{}, w.inputs());
+void test_forgotten_bottle_runs_dry_safely() {
+  PlantProfile p = makePlant("fern");
+  p.bottle.capacityMl = 600;
+  Node n(p);
+  n.world.bottleMl = 600;
+  n.world.plant.dryPctPerHour = 1.0f;
+  n.start(Settings{});
+  n.engine.refilled(0);
+  n.simulate(20 * kDay, false);
+  const NodeStatus st = n.engine.status();
+  TEST_ASSERT_TRUE(st.bottle.empty);
+  TEST_ASSERT_TRUE(n.engine.alerts().isActive(AlertCode::BottleEmpty, 0));
+  // Everything usable went to the plant, and the pump never ran dry for long.
+  TEST_ASSERT_TRUE(n.world.bottleMl <= n.world.intakeMl + 50);
+  TEST_ASSERT_FLOAT_WITHIN(0.05f * n.world.dispensedTotal + 5, n.world.dispensedTotal, n.sink.wateredMl());
+  TEST_ASSERT_FALSE(st.lockedOut);
+}
 
-  // No refills: let the reservoir run down to the empty threshold.
-  const MonoMs end = 10 * kDay;
-  float minMoisture = 100;
-  while (w.now < end) {
-    e.tick(w.inputs());
-    if (w.now > kDay) minMoisture = std::min({minMoisture, w.plants[0].moisture, w.plants[1].moisture});
-    bool busy = e.doseActive() || w.openChannel >= 0;
-    w.advance(busy ? 250 : 10000);
-    // Stop between sessions: watering events are logged when a session ends.
-    if (w.reservoirMl < 600 && !busy) {
-      EngineStatus st = e.status();
-      bool idle = std::all_of(st.plants.begin(), st.plants.end(),
-                              [](const PlantStatus& p) { return p.planner == PlannerState::Idle; });
-      if (idle) break;
+void test_flow_self_calibration_over_refill_cycles() {
+  PlantProfile p = makePlant("basil");
+  p.bottle.capacityMl = 800;
+  p.maxDailyMl = 1000;
+  Node n(p);
+  n.world.flowMlPerS = 2.6f;  // the profile says 2.0
+  n.world.bottleMl = 800;
+  n.world.plant.dryPctPerHour = 1.5f;
+  n.start(Settings{});
+  n.engine.refilled(0);
+  // Refill only when the pump says empty, so each cycle can be learned from.
+  const MonoMs end = 25 * kDay;
+  while (n.world.now < end) {
+    n.step(kDay, false);
+    if (n.engine.status().bottle.empty && !n.engine.doseActive()) {
+      n.world.bottleMl = 800;
+      n.engine.refilled(0);
+      n.refills++;
     }
   }
-  // Low head never produced a false "no flow" lockout, and doses matched what the scale saw.
-  TEST_ASSERT_FALSE(e.alerts().isActive(AlertCode::OutletNoFlow, 0));
-  TEST_ASSERT_FALSE(e.alerts().isActive(AlertCode::OutletNoFlow, 1));
-  TEST_ASSERT_FLOAT_WITHIN(0.02f * w.dispensedTotal + 5, w.dispensedTotal, sink.wateredMl());
-  TEST_ASSERT_TRUE(minMoisture >= 20.0f);
+  TEST_ASSERT_TRUE(n.refills >= 3);
+  TEST_ASSERT_FLOAT_WITHIN(0.1f, 1.3f, n.engine.status().bottle.flowFactor);
+  // So the gauge now tracks the real bottle closely.
+  TEST_ASSERT_FLOAT_WITHIN(80.0f, n.world.bottleMl, n.engine.status().bottle.ml);
 }
 
 void test_sensor_dislodged_midway_limits_damage() {
-  World w(1);
-  RecordingSink sink;
-  Engine e(w, sink);
-  std::vector<PlantProfile> plants{makePlant("fern", 0)};
-  w.plants[0].dryPctPerHour = 0.6f;
-  e.configure(w.settings(), plants);
-  e.restore(PersistedState{}, w.inputs());
-  Tracker t(1);
-  simulate(w, e, plants, 5 * kDay, t);
-  const float before = sink.wateredMl(0);
+  Node n(makePlant("fern"));
+  n.world.plant.dryPctPerHour = 0.6f;
+  n.start(Settings{});
+  n.simulate(5 * kDay);
+  const float before = n.sink.wateredMl();
 
-  w.plants[0].sensorInSoil = false;  // knocked out of the pot: reads bone dry
-  simulate(w, e, plants, 5 * kDay, t);
-  const float after = sink.wateredMl(0) - before;
-  TEST_ASSERT_TRUE(after <= 2 * plants[0].maxPulseMl + 1);  // at most one failed session
-  TEST_ASSERT_TRUE(e.alerts().isActive(AlertCode::SensorNoResponse, 0));
-  TEST_ASSERT_TRUE(t.maxOver[0] <= 3.0f);
+  n.world.plant.sensorInSoil = false;  // knocked out of the pot: reads bone dry
+  n.simulate(5 * kDay);
+  const float after = n.sink.wateredMl() - before;
+  TEST_ASSERT_TRUE(after <= 2 * n.plant.maxPulseMl + 1);  // at most one failed session
+  TEST_ASSERT_TRUE(n.engine.alerts().isActive(AlertCode::SensorNoResponse, 0));
+  TEST_ASSERT_TRUE(n.maxOver <= 3.0f);
 
   // Put it back. The pot has dried out meanwhile, so the reading does not rise by
   // itself: the user clears the fault from the dashboard and watering resumes.
-  w.plants[0].sensorInSoil = true;
-  simulate(w, e, plants, 1 * kHour, t);
-  TEST_ASSERT_TRUE(e.alerts().isActive(AlertCode::SensorNoResponse, 0));
-  TEST_ASSERT_EQUAL_STRING("", e.clearLockout("fern").c_str());
-  simulate(w, e, plants, 3 * kDay, t);
-  TEST_ASSERT_FALSE(e.alerts().isActive(AlertCode::SensorNoResponse, 0));
-  TEST_ASSERT_TRUE(sink.wateredMl(0) - before > after);
+  n.world.plant.sensorInSoil = true;
+  n.simulate(1 * kHour);
+  TEST_ASSERT_TRUE(n.engine.alerts().isActive(AlertCode::SensorNoResponse, 0));
+  TEST_ASSERT_EQUAL_STRING("", n.engine.clearFaults().c_str());
+  n.simulate(3 * kDay);
+  TEST_ASSERT_FALSE(n.engine.alerts().isActive(AlertCode::SensorNoResponse, 0));
+  TEST_ASSERT_TRUE(n.sink.wateredMl() - before > after);
 }
 
 void test_power_cut_mid_dose_does_not_double_water() {
-  World w(1);
+  World w;
   RecordingSink sink;
-  std::vector<PlantProfile> plants{makePlant("fern", 0)};
-  w.plants[0].moisture = 30;
+  PlantProfile p = makePlant("fern");
+  w.plant.moisture = 30;
   {
     Engine e(w, sink);
-    e.configure(w.settings(), plants);
+    e.configure(w.settings(), &p);
     e.restore(PersistedState{}, w.inputs());
     w.lastSampleMs = -1000000;
-    run(w, e, 20000);
+    run(w, e, 15000);
     TEST_ASSERT_TRUE(e.doseActive());
     TEST_ASSERT_TRUE(sink.last.dispenseInProgress);
   }
-  // Power cut: outlets lose power, the controller reboots.
-  w.closeAll();
+  // Batteries pulled: the pump stops, the node reboots.
+  w.off();
   const PersistedState saved = sink.last;
   w.now += 5000;
   RecordingSink sink2;
   Engine e2(w, sink2);
-  e2.configure(w.settings(), plants);
+  e2.configure(w.settings(), &p);
   e2.restore(saved, w.inputs());
   TEST_ASSERT_TRUE(e2.alerts().isActive(AlertCode::InterruptedDispense, 0));
   run(w, e2, 5 * kHour);
@@ -203,11 +217,41 @@ void test_power_cut_mid_dose_does_not_double_water() {
   TEST_ASSERT_TRUE(sink2.count(EventType::Watering, "auto") >= 1);  // and then it catches up
 }
 
+void test_keeps_watering_without_the_main_station() {
+  // Rebooted while the main station is off: no clock, no room climate.
+  Node n(makePlant("fern"));
+  n.world.clockValid = false;
+  n.world.env.valid = false;
+  n.world.env.luxValid = false;
+  n.world.plant.dryPctPerHour = 0.8f;
+  n.start(Settings{});
+  n.simulate(6 * kDay);
+  TEST_ASSERT_TRUE(n.maxOver <= 3.0f);
+  TEST_ASSERT_TRUE(n.minUnder >= 0.0f);
+  TEST_ASSERT_TRUE(n.sink.count(EventType::Watering, "auto") >= 3);
+  // Daily limits still reset (every 24 h of uptime).
+  TEST_ASSERT_TRUE(n.engine.status().mlToday <= n.plant.maxDailyMl);
+}
+
+void test_five_minute_check_ins_keep_the_plant_in_band() {
+  // Between sessions a battery node only reads its soil at each check-in.
+  Node n(makePlant("fern"));
+  n.world.sampleIntervalS = 300;
+  n.world.plant.dryPctPerHour = 0.7f;
+  n.start(Settings{});
+  n.simulate(10 * kDay);
+  TEST_ASSERT_TRUE(n.maxOver <= 3.0f);
+  TEST_ASSERT_TRUE(n.minUnder >= 0.0f);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_month_with_mixed_plants_stays_in_band);
-  RUN_TEST(test_gravity_valves_as_reservoir_drains);
+  RUN_TEST(test_forgotten_bottle_runs_dry_safely);
+  RUN_TEST(test_flow_self_calibration_over_refill_cycles);
   RUN_TEST(test_sensor_dislodged_midway_limits_damage);
   RUN_TEST(test_power_cut_mid_dose_does_not_double_water);
+  RUN_TEST(test_keeps_watering_without_the_main_station);
+  RUN_TEST(test_five_minute_check_ins_keep_the_plant_in_band);
   return UNITY_END();
 }

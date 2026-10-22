@@ -1,4 +1,4 @@
-// Hard safety rules every dispense must pass, automatic or manual.
+// Hard safety rules every dose must pass, automatic or manual.
 #pragma once
 
 #include "Types.h"
@@ -8,10 +8,9 @@ namespace plantcore {
 enum class BlockReason : uint8_t {
   None,
   InvalidAmount,
-  Leak,
   EmergencyStop,
-  ReservoirEmpty,
-  OutletBusy,
+  BottleEmpty,
+  BatteryLow,
   Lockout,
   PlantDisabled,
   AutomationPaused,
@@ -19,18 +18,15 @@ enum class BlockReason : uint8_t {
   SensorFault,
   MinInterval,
   PlantDailyLimit,
-  TotalDailyLimit,
 };
 
 const char* blockReasonName(BlockReason r);
 
-struct GlobalState {
+struct NodeState {
   bool automationEnabled = true;
   bool emergencyStop = false;
-  bool leak = false;
-  bool reservoirEmpty = false;
-  bool outletActive = false;
-  float mlTodayTotal = 0;
+  bool bottleEmpty = false;
+  bool batteryCritical = false;
 };
 
 struct DispenseRequest {
@@ -46,13 +42,17 @@ struct Verdict {
   float ml = 0;  // possibly reduced to fit the limits
 };
 
-// Smallest dose worth opening an outlet for.
+// Smallest dose worth starting the pump for.
 constexpr float kMinDoseMl = 5.0f;
 
-Verdict evaluateDispense(const SafetyLimits& limits, const GlobalState& global, const PlantProfile& plant,
+// Battery thresholds for 3xAA (no load): warn, then refuse to pump.
+constexpr float kBatteryLowMv = 3600;
+constexpr float kBatteryCriticalMv = 3300;
+
+Verdict evaluateDispense(const SafetyLimits& limits, const NodeState& node, const PlantProfile& plant,
                          const PlantRuntime& runtime, SensorHealth sensor, const DispenseRequest& req);
 
-// Longest an outlet may stay open for this dose: 1.5x the expected time plus margin,
+// Longest the pump may run for this dose: 1.5x the expected time plus margin,
 // never more than the hard cap.
 uint32_t maxOnTimeMs(const SafetyLimits& limits, float ml, float flowMlPerS);
 

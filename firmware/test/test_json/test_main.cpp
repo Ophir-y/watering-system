@@ -7,6 +7,7 @@
 #include <sstream>
 #include <string>
 
+#include "Alerts.h"
 #include "History.h"
 #include "Json.h"
 
@@ -99,7 +100,8 @@ void test_plant_fixture_round_trip() {
   std::string err;
   TEST_ASSERT_TRUE_MESSAGE(fromJson(fixture.as<JsonObjectConst>(), p, err), err.c_str());
   TEST_ASSERT_EQUAL_STRING("monstera", p.id.c_str());
-  TEST_ASSERT_EQUAL(OutletType::Pump, p.outlet.type);
+  TEST_ASSERT_EQUAL_STRING("a0b1c2d3e4f5", p.node.c_str());
+  TEST_ASSERT_EQUAL_FLOAT(1500, p.bottle.capacityMl);
   TEST_ASSERT_EQUAL_HEX16((1u << 0) | (1u << 1) | (1u << 10) | (1u << 11), p.dormantMonths);
   JsonDocument out;
   toJson(p, out.to<JsonObject>());
@@ -124,6 +126,20 @@ void test_plant_partial_update_keeps_other_fields() {
   TEST_ASSERT_EQUAL_FLOAT(35, p.moisture.min);
 }
 
+void test_plant_node_can_be_unlinked() {
+  PlantProfile p;
+  std::string err;
+  TEST_ASSERT_TRUE(parsePlant(R"({"id":"fern","name":"Fern","node":"a0b1c2d3e4f5"})", p, err));
+  TEST_ASSERT_EQUAL_STRING("a0b1c2d3e4f5", p.node.c_str());
+  TEST_ASSERT_TRUE(parsePlant(R"({"name":"Fern"})", p, err));
+  TEST_ASSERT_EQUAL_STRING("a0b1c2d3e4f5", p.node.c_str());  // absent: kept
+  TEST_ASSERT_TRUE(parsePlant(R"({"node":null})", p, err));
+  TEST_ASSERT_TRUE(p.node.empty());
+  JsonDocument out;
+  toJson(p, out.to<JsonObject>());
+  TEST_ASSERT_TRUE(out["node"].isNull());
+}
+
 void test_plant_validation_errors() {
   struct Case {
     const char* json;
@@ -132,14 +148,18 @@ void test_plant_validation_errors() {
   const Case cases[] = {
       {R"({"id":"Bad Id","name":"x"})", "id must be"},
       {R"({"id":"a","name":""})", "name is required"},
-      {R"({"id":"a","name":"x","channel":8})", "channel must be"},
-      {R"({"id":"a","name":"x","channel":-1})", "channel is out of range"},
+      {R"({"id":"a","name":"x","node":"A0B1C2D3E4F5"})", "node must be"},
+      {R"({"id":"a","name":"x","node":"a0b1"})", "node must be"},
+      {R"({"id":"a","name":"x","node":7})", "node must be a string"},
+      {R"({"id":"a","name":"x","bottle":{"capacityMl":50}})", "bottle.capacityMl must be"},
+      {R"({"id":"a","name":"x","bottle":{"capacityMl":400,"reserveMl":250}})", "bottle.reserveMl must be"},
       {R"({"id":"a","name":"x","moisture":{"min":60}})", "moisture must satisfy"},
       {R"({"id":"a","name":"x","potVolumeMl":"big"})", "potVolumeMl must be a number"},
       {R"({"id":"a","name":"x","style":"drown_it"})", "style has an unknown value"},
       {R"({"id":"a","name":"x","dormantMonths":[0]})", "dormantMonths must be"},
       {R"({"id":"a","name":"x","maxPulseMl":1})", "maxPulseMl must be"},
-      {R"({"id":"a","name":"x","outlet":{"flowMlPerS":0}})", "outlet.flowMlPerS must be"},
+      {R"({"id":"a","name":"x","pump":{"flowMlPerS":0}})", "pump.flowMlPerS must be"},
+      {R"({"id":"a","name":"x","pump":{"currentSense":1}})", "currentSense must be"},
   };
   for (const auto& c : cases) {
     PlantProfile p;
@@ -184,8 +204,8 @@ void test_settings_validation() {
       R"({"notify":{"server":"ftp://x"}})",
       R"({"waterWindow":{"startH":24}})",
       R"({"waterWindow":{"startH":300}})",
-      R"({"sampleIntervalS":1})",
-      R"({"reservoir":{"emptyMl":6000}})",
+      R"({"checkInMin":0})",
+      R"({"checkInMin":90})",
       R"({"limits":{"hardMaxOnTimeS":1000}})",
   };
   for (const char* json : bad) {
@@ -197,77 +217,56 @@ void test_settings_validation() {
   }
 }
 
-// ------------------------------------------------------------------ status
+// ------------------------------------------------------------------ node config
 
-void test_status_matches_fixture() {
-  Settings settings;
-  settings.tzName = "Asia/Jerusalem";
-  settings.reservoir.capacityMl = 5000;
+void test_node_config_round_trip_and_size() {
+  JsonDocument fixture = loadFixture("plant.json");
+  PlantProfile p;
+  std::string err;
+  TEST_ASSERT_TRUE(fromJson(fixture.as<JsonObjectConst>(), p, err));
+  Settings s;
+  s.waterWindowStartH = 6;
+  s.checkInMin = 10;
+  s.limits.hardMaxPulseMl = 200;
+  s.notify.token = "never-sent";
 
-  SystemInfo sys;
-  sys.version = "0.1.0";
-  sys.uptimeS = 86400;
-  sys.timeValid = true;
-  sys.now = 1767261600;
-  sys.heapFree = 154320;
-  sys.resetReason = "power_on";
-  sys.wifiMode = "sta";
-  sys.ssid = "HomeWiFi";
-  sys.ip = "192.168.1.50";
-  sys.rssi = -58;
-  sys.apSsid = "PlantCare-1A2B";
-  sys.internet = true;
-  sys.sdOk = true;
-  sys.sdUsedMb = 12.5f;
-  sys.sdTotalMb = 29819.4f;
-  sys.scaleCalibrated = true;
-  sys.scaleRaw = 1843210;
+  JsonDocument doc;
+  nodeConfigToJson(s, p, doc.to<JsonObject>());
+  std::string text;
+  serializeJson(doc, text);
+  // Sent to the node in radio-sized chunks: keep it a handful of frames.
+  TEST_ASSERT_TRUE_MESSAGE(text.size() < 900, std::to_string(text.size()).c_str());
+  TEST_ASSERT_TRUE(text.find("careNotes") == std::string::npos);
+  TEST_ASSERT_TRUE(text.find("never-sent") == std::string::npos);
 
-  EngineStatus st;
-  st.reservoir.scaleValid = true;
-  st.reservoir.ml = 3250;
-  st.reservoir.pct = 65;
-  st.reservoir.daysLeft = 8.6f;
-  st.env = EnvSnapshot{true, 23.4f, 48, true, 5400};
-  st.vpdKPa = 1.5f;
-  st.dose.active = true;
-  st.dose.plantId = "monstera";
-  st.dose.ml = 60;
-  st.dose.dispensedMl = 22.5f;
-  st.lastDose.valid = true;
-  st.lastDose.plantId = "monstera";
-  st.lastDose.ml = 98.2f;
-  st.lastDose.onTimeMs = 54500;
-  st.lastDose.closedLoop = true;
-  st.lastDose.at = 1767258000;
-  st.mlTodayTotal = 230;
-  PlantStatus a;
-  a.id = "monstera";
-  a.name = "Monstera";
-  a.haveMoisture = true;
-  a.moisturePct = 33.2f;
-  a.raw = 17348;
-  a.planner = PlannerState::Pulsing;
-  a.triggerPct = 36.5f;
-  a.targetPct = 55;
-  a.mlToday = 120;
-  a.lastWateredAt = 1767175200;
-  a.mlPerPct = 11.25f;
-  PlantStatus b;
-  b.id = "snake-plant";
-  b.name = "Snake plant";
-  b.channel = 1;
-  b.health = SensorHealth::Failed;
-  b.issue = SensorIssue::Disconnected;
-  b.triggerPct = 15;
-  b.targetPct = 40;
-  st.plants = {a, b};
-  st.alertsWarning = 1;
+  Settings ns;
+  PlantProfile np;
+  JsonDocument back;
+  deserializeJson(back, text);
+  TEST_ASSERT_TRUE_MESSAGE(nodeConfigFromJson(back.as<JsonObjectConst>(), ns, np, err), err.c_str());
+  TEST_ASSERT_EQUAL_STRING("monstera", np.id.c_str());
+  TEST_ASSERT_EQUAL_STRING("Monstera", np.name.c_str());
+  TEST_ASSERT_EQUAL_FLOAT(1.8f, np.pump.flowMlPerS);
+  TEST_ASSERT_EQUAL_FLOAT(1500, np.bottle.capacityMl);
+  TEST_ASSERT_EQUAL_INT32(9800, np.cal.rawWet);
+  TEST_ASSERT_EQUAL(6, ns.waterWindowStartH);
+  TEST_ASSERT_EQUAL(10, ns.checkInMin);
+  TEST_ASSERT_EQUAL_FLOAT(200, ns.limits.hardMaxPulseMl);
+}
 
-  JsonDocument out;
-  statusToJson(st, sys, settings, out.to<JsonObject>());
-  JsonDocument fixture = loadFixture("status.json");
-  assertMatches(fixture.as<JsonVariantConst>(), out.as<JsonVariantConst>());
+void test_node_config_rejects_bad_input_without_changes() {
+  Settings s;
+  PlantProfile p;
+  p.id = "fern";
+  p.name = "Fern";
+  std::string err;
+  JsonDocument bad;
+  deserializeJson(bad, R"({"plant":{"id":"fern","name":"Fern","moisture":{"min":90}},"settings":{}})");
+  TEST_ASSERT_FALSE(nodeConfigFromJson(bad.as<JsonObjectConst>(), s, p, err));
+  TEST_ASSERT_EQUAL_FLOAT(35, p.moisture.min);
+  JsonDocument missing;
+  deserializeJson(missing, R"({"plant":{"id":"fern","name":"Fern"}})");
+  TEST_ASSERT_FALSE(nodeConfigFromJson(missing.as<JsonObjectConst>(), s, p, err));
 }
 
 // ------------------------------------------------------------------ alerts / events
@@ -275,11 +274,12 @@ void test_status_matches_fixture() {
 void test_alerts_match_fixture() {
   Alert low;
   low.id = 7;
-  low.code = AlertCode::ReservoirLow;
+  low.code = AlertCode::BottleLow;
   low.severity = Severity::Warning;
+  low.channel = 0;
   low.active = true;
   low.raisedAt = 1767250000;
-  low.message = "The reservoir is low: 900 ml (18%), about 1.9 days left.";
+  low.message = "Monstera's bottle is low: about 300 ml (20%), about 1.9 days left.";
   Alert sensor;
   sensor.id = 5;
   sensor.code = AlertCode::SensorFault;
@@ -289,13 +289,32 @@ void test_alerts_match_fixture() {
   sensor.raisedAt = 1767200000;
   sensor.clearedAt = 1767210000;
   sensor.message = "Snake plant: moisture sensor looks disconnected or shorted.";
+  Alert clock;
+  clock.id = 3;
+  clock.code = AlertCode::TimeNotSet;
+  clock.severity = Severity::Warning;
+  clock.raisedAt = 1767190000;
+  clock.clearedAt = 1767190100;
+  clock.message = "The clock is not set.";
 
   JsonDocument out;
   JsonArray arr = out["alerts"].to<JsonArray>();
-  toJson(low, "", arr.add<JsonObject>());
+  toJson(low, "monstera", arr.add<JsonObject>());
   toJson(sensor, "snake-plant", arr.add<JsonObject>());
+  toJson(clock, "", arr.add<JsonObject>());
   JsonDocument fixture = loadFixture("alerts.json");
   assertMatches(fixture.as<JsonVariantConst>(), out.as<JsonVariantConst>());
+}
+
+void test_alert_codes_have_names() {
+  for (uint8_t i = 0; i < static_cast<uint8_t>(AlertCode::Count); ++i) {
+    const AlertCode code = static_cast<AlertCode>(i);
+    AlertCode back = AlertCode::Count;
+    TEST_ASSERT_TRUE(parseAlertCode(alertCodeName(code), back));
+    TEST_ASSERT_EQUAL(code, back);
+  }
+  AlertCode x;
+  TEST_ASSERT_FALSE(parseAlertCode("reservoir_low", x));
 }
 
 void test_events_match_fixture() {
@@ -308,20 +327,25 @@ void test_events_match_fixture() {
   Event a;
   a.ts = 1767250000;
   a.type = EventType::AlertRaised;
-  a.code = "reservoir_low";
-  a.detail = "The reservoir is low: 900 ml (18%), about 1.9 days left.";
+  a.code = "bottle_low";
+  a.detail = "Monstera's bottle is low: about 300 ml (20%), about 1.9 days left.";
   Event r;
   r.ts = 1767240000;
   r.type = EventType::Refill;
   r.code = "refill";
-  r.ml = 3800;
-  r.detail = "Reservoir refilled (+3800 ml)";
+  r.ml = 1500;
+  r.detail = "Bottle refilled";
+  Event sys;
+  sys.ts = 1767230000;
+  sys.code = "automation_off";
+  sys.detail = "Automatic watering paused";
 
   JsonDocument out;
   JsonArray arr = out["events"].to<JsonArray>();
   toJson(w, "monstera", arr.add<JsonObject>());
-  toJson(a, "", arr.add<JsonObject>());
-  toJson(r, "", arr.add<JsonObject>());
+  toJson(a, "monstera", arr.add<JsonObject>());
+  toJson(r, "monstera", arr.add<JsonObject>());
+  toJson(sys, "", arr.add<JsonObject>());
   JsonDocument fixture = loadFixture("events.json");
   assertMatches(fixture.as<JsonVariantConst>(), out.as<JsonVariantConst>());
 }
@@ -330,11 +354,15 @@ void test_events_match_fixture() {
 
 void test_history_matches_fixture() {
   const EpochS from = 1767225600, to = from + 3 * 3600;
-  Downsampler d(from, to, 3, 1);
-  const std::pair<EpochS, float> rows[] = {{from + 600, 40}, {from + 1800, 42}, {from + 4200, 55}};
-  for (const auto& r : rows) {
-    bool ok = true;
-    d.add(r.first, &r.second, &ok);
+  Downsampler d(from, to, 3, 2);
+  const char* lines[] = {"1767226200,monstera,15200,40.0,1210,4380", "1767227400,monstera,15000,42.0,1190,4370",
+                         "1767229800,monstera,12100,55.0,1090,"};
+  for (const char* line : lines) {
+    ReadingRow r;
+    TEST_ASSERT_TRUE(parseReading(line, r));
+    const float v[2] = {r.pct, r.bottleMl};
+    const bool ok[2] = {true, r.bottleMl >= 0};
+    d.add(r.ts, v, ok);
   }
   JsonDocument out;
   out["plantId"] = "monstera";
@@ -347,8 +375,9 @@ void test_env_history_matches_fixture() {
   const EpochS from = 1767225600, to = from + 3 * 3600;
   Downsampler d(from, to, 3, kEnvColumns);
   EnvRow rows[3];
-  const char* lines[] = {"1767226200,22.0,50.0,5000.0,3300.0", "1767227400,23.0,50.0,5400.0,3300.0",
-                         "1767229800,23.0,,,3250.0"};
+  // The middle row was logged by the single-board build (fifth column: reservoir ml).
+  const char* lines[] = {"1767226200,22.0,50.0,5000.0", "1767227400,23.0,50.0,5400.0,3300.0",
+                         "1767229800,23.0,,"};
   for (int i = 0; i < 3; ++i) {
     TEST_ASSERT_TRUE(parseEnv(lines[i], rows[i]));
     d.add(rows[i].ts, rows[i].values, rows[i].valid);
@@ -364,15 +393,21 @@ void test_env_history_matches_fixture() {
 void test_persisted_state_round_trip() {
   PersistedState s;
   s.day = 20454;
-  s.mlTodayTotal = 230;
-  s.usagePerDayMl = 410;
-  s.emergencyStop = true;
+  s.stopped = true;
   s.dispenseInProgress = true;
-  s.inProgressChannel = 2;
   s.inProgressMl = 60;
-  s.plants[2].lastSessionEndS = 1767175200;
-  s.plants[2].mlPerPct = 11.25f;
-  s.plants[2].lockedOut = true;
+  s.plant.lastSessionEndS = 1767175200;
+  s.plant.mlPerPct = 11.25f;
+  s.plant.lockedOut = true;
+  s.bottle.ml = 640;
+  s.bottle.pumpedSinceRefillMl = 820;
+  s.bottle.knownFull = true;
+  s.bottle.flowFactor = 1.125f;
+  s.bottle.usagePerDayMl = 140;
+  s.bottle.empty = true;
+  s.bottle.emptyReason = static_cast<uint8_t>(EmptyReason::PumpDry);
+  s.pump.wetMaPerV = 41.5f;
+  s.pump.runs = 7;
   JsonDocument doc;
   toJson(s, doc.to<JsonObject>());
   std::string text;
@@ -382,18 +417,31 @@ void test_persisted_state_round_trip() {
   PersistedState r;
   TEST_ASSERT_TRUE(fromJson(back.as<JsonObjectConst>(), r));
   TEST_ASSERT_EQUAL_INT32(20454, r.day);
-  TEST_ASSERT_TRUE(r.emergencyStop);
+  TEST_ASSERT_TRUE(r.stopped);
   TEST_ASSERT_TRUE(r.dispenseInProgress);
-  TEST_ASSERT_EQUAL(2, r.inProgressChannel);
   TEST_ASSERT_EQUAL_FLOAT(60, r.inProgressMl);
-  TEST_ASSERT_EQUAL_INT64(1767175200, r.plants[2].lastSessionEndS);
-  TEST_ASSERT_FLOAT_WITHIN(0.01f, 11.25f, r.plants[2].mlPerPct);
-  TEST_ASSERT_TRUE(r.plants[2].lockedOut);
-  TEST_ASSERT_FALSE(r.plants[0].lockedOut);
+  TEST_ASSERT_EQUAL_INT64(1767175200, r.plant.lastSessionEndS);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 11.25f, r.plant.mlPerPct);
+  TEST_ASSERT_TRUE(r.plant.lockedOut);
+  TEST_ASSERT_EQUAL_FLOAT(640, r.bottle.ml);
+  TEST_ASSERT_EQUAL_FLOAT(820, r.bottle.pumpedSinceRefillMl);
+  TEST_ASSERT_TRUE(r.bottle.knownFull);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.125f, r.bottle.flowFactor);
+  TEST_ASSERT_TRUE(r.bottle.empty);
+  TEST_ASSERT_EQUAL(static_cast<uint8_t>(EmptyReason::PumpDry), r.bottle.emptyReason);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 41.5f, r.pump.wetMaPerV);
+  TEST_ASSERT_EQUAL(7, r.pump.runs);
 
-  JsonDocument wrongVersion;
-  deserializeJson(wrongVersion, R"({"v":99})");
-  TEST_ASSERT_FALSE(fromJson(wrongVersion.as<JsonObjectConst>(), r));
+  PersistedState idle;
+  JsonDocument d2;
+  toJson(idle, d2.to<JsonObject>());
+  TEST_ASSERT_TRUE(fromJson(d2.as<JsonObjectConst>(), r));
+  TEST_ASSERT_FALSE(r.dispenseInProgress);
+  TEST_ASSERT_EQUAL_FLOAT(-1, r.bottle.ml);  // never set: the gauge starts full
+
+  JsonDocument oldVersion;
+  deserializeJson(oldVersion, R"({"v":1,"plants":[]})");
+  TEST_ASSERT_FALSE(fromJson(oldVersion.as<JsonObjectConst>(), r));
 }
 
 int main() {
@@ -401,12 +449,15 @@ int main() {
   RUN_TEST(test_comparison_detects_differences);
   RUN_TEST(test_plant_fixture_round_trip);
   RUN_TEST(test_plant_partial_update_keeps_other_fields);
+  RUN_TEST(test_plant_node_can_be_unlinked);
   RUN_TEST(test_plant_validation_errors);
   RUN_TEST(test_settings_fixture_round_trip);
   RUN_TEST(test_settings_token_is_write_only);
   RUN_TEST(test_settings_validation);
-  RUN_TEST(test_status_matches_fixture);
+  RUN_TEST(test_node_config_round_trip_and_size);
+  RUN_TEST(test_node_config_rejects_bad_input_without_changes);
   RUN_TEST(test_alerts_match_fixture);
+  RUN_TEST(test_alert_codes_have_names);
   RUN_TEST(test_events_match_fixture);
   RUN_TEST(test_history_matches_fixture);
   RUN_TEST(test_env_history_matches_fixture);

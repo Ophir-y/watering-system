@@ -4,8 +4,9 @@
   "species": "monstera_deliciosa",
   "enabled": true,
   "autoWater": true,
-  "channel": 0,
-  "outlet": { "type": "pump", "flowMlPerS": 1.8, "calFillPct": 100, "dropMm": 300 },
+  "node": "a0b1c2d3e4f5",
+  "pump": { "flowMlPerS": 1.8, "currentSense": true },
+  "bottle": { "capacityMl": 1500, "lowPct": 25, "reserveMl": 50 },
   "potVolumeMl": 3000,
   "soil": "Chunky aroid mix (bark, perlite, coco coir)",
   "moisture": { "critical": 20, "min": 35, "target": 55, "max": 75 },
@@ -22,6 +23,6 @@
   "onSensorFault": "pause",
   "fallbackEveryDays": 4,
   "fallbackMl": 150,
-  "calibration": { "rawDry": 21200, "rawWet": 9800 },
+  "calibration": { "rawDry": 19400, "rawWet": 9800 },
   "careNotes": "Let the top few cm dry between waterings. Wipe the leaves monthly."
 }
