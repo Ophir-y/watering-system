@@ -9,6 +9,7 @@ Thumbs.db
 
 # Firmware (PlatformIO)
 firmware/.pio/
+firmware/tools/spike/.pio/
 firmware/.vscode/
 firmware/src/generated/web_assets.h
 
