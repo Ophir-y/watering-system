@@ -45,15 +45,17 @@ export function limitsForPot(potVolumeMl: number) {
   };
 }
 
-export function defaultProfile(channel: number): PlantProfile {
+// A new plant, watered by `node` (a plant node waiting to be added).
+export function defaultProfile(node: string | null = null): PlantProfile {
   return {
     id: '',
     name: '',
     species: '',
     enabled: true,
     autoWater: true,
-    channel,
-    outlet: { type: 'valve', flowMlPerS: 2, calFillPct: 100, dropMm: 300 },
+    node,
+    pump: { flowMlPerS: 1.5, currentSense: true },
+    bottle: { capacityMl: 1500, lowPct: 25, reserveMl: 50 },
     potVolumeMl: 2000,
     soil: '',
     moisture: { critical: 20, min: 35, target: 55, max: 75 },
@@ -66,7 +68,7 @@ export function defaultProfile(channel: number): PlantProfile {
     dormancyFactor: 0.7,
     onSensorFault: 'pause',
     fallbackEveryDays: 4,
-    calibration: { rawDry: 21000, rawWet: 10000 },
+    calibration: { rawDry: 19200, rawWet: 9600 },
     careNotes: '',
     ...limitsForPot(2000),
   };

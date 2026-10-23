@@ -9,7 +9,7 @@ import { envStats, recommendations, wateringStats } from './recommendations';
 import { validatePlant } from './validate';
 
 const profile = (over: Partial<PlantProfile> = {}): PlantProfile => ({
-  ...defaultProfile(0),
+  ...defaultProfile('a0b1c2d3e4f5'),
   id: 'fern',
   name: 'Fern',
   ...over,
@@ -18,7 +18,13 @@ const profile = (over: Partial<PlantProfile> = {}): PlantProfile => ({
 const status = (over: Partial<PlantStatus> = {}): PlantStatus => ({
   id: 'fern',
   name: 'Fern',
-  channel: 0,
+  node: 'a0b1c2d3e4f5',
+  online: true,
+  lastSeenAt: 1000,
+  nextCheckInS: 120,
+  firmware: '0.2.0',
+  battery: { mv: 4300, pct: 74, low: false },
+  linkPct: 100,
   moisturePct: 50,
   raw: 15000,
   sensor: 'ok',
@@ -31,6 +37,22 @@ const status = (over: Partial<PlantStatus> = {}): PlantStatus => ({
   lockedOut: false,
   mlPerPct: null,
   soakRemainingS: 0,
+  bottle: {
+    ml: 900,
+    pct: 60,
+    capacityMl: 1500,
+    daysLeft: 6,
+    low: false,
+    empty: false,
+    emptyReason: 'none',
+    flowFactor: 1,
+  },
+  pump: { learned: true, lastRun: 'ok' },
+  dosing: null,
+  queued: [],
+  configPending: false,
+  repairRequested: false,
+  buttonPressed: false,
   ...over,
 });
 
@@ -60,8 +82,26 @@ describe('format', () => {
 });
 
 describe('plant condition', () => {
+  it('starts with the node and the bottle', () => {
+    expect(plantCondition(status({ node: null })).label).toBe('No node');
+    expect(plantCondition(status({ online: false, lastSeenAt: null, bottle: null })).label).toBe(
+      'Waiting for its node',
+    );
+    expect(plantCondition(status({ online: false })).label).toBe('Node offline');
+    const empty = status().bottle!;
+    expect(plantCondition(status({ bottle: { ...empty, empty: true, ml: 0 }, lockedOut: true })).label).toBe(
+      'Bottle empty',
+    );
+    expect(plantCondition(status({ bottle: { ...empty, low: true } })).label).toBe('Refill soon');
+    expect(plantCondition(status({ battery: { mv: 3500, pct: 15, low: true } })).label).toBe('Batteries low');
+    expect(plantCondition(status({ queued: [{ id: 1, kind: 'water', arg: 50 }] })).label).toBe(
+      'Water queued',
+    );
+    expect(plantCondition(status({ repairRequested: true })).tone).toBe('serious');
+  });
+
   it('puts faults before moisture', () => {
-    expect(plantCondition(status({ lockedOut: true, moisturePct: 10 })).label).toBe('Outlet locked');
+    expect(plantCondition(status({ lockedOut: true, moisturePct: 10 })).label).toBe('Pump locked');
     expect(plantCondition(status({ sensor: 'failed', issue: 'disconnected' })).tone).toBe('serious');
     expect(plantCondition(status({ sensor: 'failed', issue: 'uncalibrated' })).label).toBe(
       'Needs calibration',
@@ -87,7 +127,7 @@ describe('recommendations', () => {
     const from = 0;
     const points: EnvHistory['points'] = [];
     for (let h = 0; h < 72; h++)
-      points.push([h * 3600, tMin + (h % 24 > 12 ? 4 : 0), rh, h % 24 === 13 ? lux : 0, 3000]);
+      points.push([h * 3600, tMin + (h % 24 > 12 ? 4 : 0), rh, h % 24 === 13 ? lux : 0]);
     return { from, to: 72 * 3600, points };
   };
   const base = { month: 6, southernHemisphere: false };
@@ -113,7 +153,7 @@ describe('recommendations', () => {
     expect(recommendations({ ...base, profile: p, env: envStats(env(8000, 55, 20), 0) })).toEqual([]);
   });
 
-  it('notices frequent watering, wet soil, resting season and a low reservoir', () => {
+  it('notices frequent watering, wet soil, resting season and a low bottle', () => {
     const p = profile({ dormantMonths: [6] });
     const events = Array.from({ length: 14 }, (_, i) => ({
       ts: i * 43200,
@@ -128,7 +168,7 @@ describe('recommendations', () => {
       profile: p,
       status: status({ moisturePct: 82 }),
       watering: wateringStats(events, 'fern', 0, 7 * 86400),
-      reservoirDaysLeft: 1.5,
+      bottleDaysLeft: 1.5,
     });
     const ids = recs.map((r) => r.id);
     expect(ids).toEqual(expect.arrayContaining(['watering-frequent', 'too-wet', 'dormant', 'refill']));

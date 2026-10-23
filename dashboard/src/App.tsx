@@ -24,6 +24,7 @@ function Routes() {
       <Switch>
         <Route path="/" component={Overview} />
         <Route path="/plants/new">{() => <PlantEditor />}</Route>
+        <Route path="/plants/new/:node">{(p) => <PlantEditor node={decodeURIComponent(p.node)} />}</Route>
         <Route path="/plants/:id/edit">{(p) => <PlantEditor id={decodeURIComponent(p.id)} />}</Route>
         <Route path="/plants/:id">{(p) => <PlantDetail id={decodeURIComponent(p.id)} />}</Route>
         <Route path="/activity" component={Activity} />

@@ -20,6 +20,9 @@ const PATHS = {
   refill: 'M12 3v10M8 9l4 4 4-4M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3',
   sd: 'M7 3h8l4 4v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM9 3v4M12 3v4',
   pause: 'M8 5v14M16 5v14',
+  battery: 'M3 8h15a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1zM22 11v2',
+  signal: 'M4 19v-2M9 19v-6M14 19v-10M19 19V5',
+  node: 'M8 4h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM10 8h4M12 16v.2',
 } as const;
 
 export type IconName = keyof typeof PATHS | 'stop';

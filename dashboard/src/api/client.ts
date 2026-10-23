@@ -8,6 +8,7 @@ import type {
   History,
   Info,
   PlantProfile,
+  Queued,
   Settings,
   SettingsPatch,
   Status,
@@ -94,17 +95,22 @@ export const api = {
   updatePlant: (plantId: string, p: Partial<PlantProfile>) =>
     request<PlantProfile>('PUT', `/api/plants/${id(plantId)}`, p),
   deletePlant: (plantId: string) => request<{ ok: true }>('DELETE', `/api/plants/${id(plantId)}`),
-  water: (plantId: string, ml: number) =>
-    request<{ ok: true }>('POST', `/api/plants/${id(plantId)}/water`, { ml }),
+  // Plant commands are queued and carried out when the plant's node next checks in.
+  water: (plantId: string, ml: number) => request<Queued>('POST', `/api/plants/${id(plantId)}/water`, { ml }),
   timedRun: (plantId: string, seconds: number) =>
-    request<{ ok: true }>('POST', `/api/plants/${id(plantId)}/timed-run`, { seconds }),
+    request<Queued>('POST', `/api/plants/${id(plantId)}/timed-run`, { seconds }),
+  refilled: (plantId: string, ml = 0) =>
+    request<Queued>('POST', `/api/plants/${id(plantId)}/refilled`, { ml }),
+  clearFaults: (plantId: string) => request<Queued>('POST', `/api/plants/${id(plantId)}/clear-faults`),
+  identify: (plantId: string) => request<Queued>('POST', `/api/plants/${id(plantId)}/identify`),
+  // Uses the node's latest reading (ageS seconds old).
   calibrate: (plantId: string, point: 'dry' | 'wet') =>
-    request<{ raw: number; calibration: { rawDry: number; rawWet: number } }>(
+    request<{ raw: number; ageS: number; calibration: { rawDry: number; rawWet: number } }>(
       'POST',
       `/api/plants/${id(plantId)}/calibrate`,
       { point },
     ),
-  clearFaults: (plantId: string) => request<{ ok: true }>('POST', `/api/plants/${id(plantId)}/clear-faults`),
+  repairNode: (nodeId: string) => request<{ ok: true }>('POST', `/api/nodes/${id(nodeId)}/repair`),
 
   history: (plantId: string, from: number, to: number, points = 200) =>
     request<History>('GET', `/api/history${q({ plant: plantId, from, to, points })}`),
@@ -120,10 +126,6 @@ export const api = {
 
   settings: () => request<Settings>('GET', '/api/settings'),
   saveSettings: (patch: SettingsPatch) => request<Settings>('PUT', '/api/settings', patch),
-
-  tareScale: () => request<{ ok: true }>('POST', '/api/reservoir/tare'),
-  calibrateScale: (ml: number) => request<{ ok: true }>('POST', '/api/reservoir/calibrate', { ml }),
-  refilled: (ml: number) => request<{ ok: true }>('POST', '/api/reservoir/refilled', { ml }),
 
   stopAll: (reason?: string) => request<{ ok: true }>('POST', '/api/system/stop', { reason }),
   resume: () => request<{ ok: true }>('POST', '/api/system/resume'),

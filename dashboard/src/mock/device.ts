@@ -1,15 +1,20 @@
-// A simulated PlantCare device implementing the same HTTP API as the firmware.
-// History is synthesized from deterministic curves; the present is simulated live
-// (plants dry out 120x faster than real life so a full cycle takes minutes).
+// A simulated PlantCare main station with a fleet of plant nodes, implementing the
+// same HTTP API as the firmware. History is synthesized from deterministic curves;
+// the present is simulated live (plants dry out 120x faster than real life, and the
+// nodes check in on that same fast clock, so a full cycle takes minutes).
 import type { StreamHandler, Transport, TransportResponse } from '../api/transport';
 import type {
   Alert,
   DeviceEvent,
+  EmptyReason,
   EnvHistory,
   History,
+  NewNode,
   PlannerState,
   PlantProfile,
   PlantStatus,
+  PumpVerdict,
+  QueuedCommand,
   SensorHealth,
   SensorIssue,
   Settings,
@@ -17,10 +22,19 @@ import type {
 } from '../api/types';
 import { applySpecies, defaultProfile, findSpecies, limitsForPot } from '../data/species';
 
-const SPEED = 120; // simulated seconds per real second for drying and soaking
+const SPEED = 120; // simulated seconds per real second for drying, soaking and check-ins
+const POUR_SPEED = 4; // doses run this much faster than real time
 const TOKEN = 'a3f1c0de5eed0000a3f1c0de5eed0000';
+const MAX_PLANTS = 16;
 const nowS = () => Math.floor(Date.now() / 1000);
 
+interface Dose {
+  ml: number;
+  dispensed: number;
+  kind: 'auto' | 'manual' | 'fallback' | 'timed';
+}
+
+// One plant node and the plant it waters.
 interface Live {
   moisture: number;
   mlToday: number;
@@ -36,21 +50,83 @@ interface Live {
   dryPerHour: number;
   periodH: number;
   phase: number;
+  dose: Dose | null;
+  bottleMl: number;
+  bottleEmpty: boolean;
+  emptyReason: EmptyReason;
+  refillDays: number;
+  pumpLearned: boolean;
+  lastRun: PumpVerdict;
+  flowFactor: number;
+  // The node.
+  batteryMv: number;
+  linkPct: number;
+  online: boolean;
+  checkInAt: number; // simulated ms of the next check-in
+  lastSeenAt: number | null;
+  queue: QueuedCommand[];
+  nextCmdId: number;
+  configPending: boolean;
+  repair: boolean;
+  buttonAt: number;
 }
 
-interface Dose {
-  plantId: string;
-  ml: number;
-  dispensed: number;
-  kind: 'auto' | 'manual' | 'fallback';
-}
-
-const DEMO: { species: string; name: string; pot: number; periodH: number; issue?: SensorIssue }[] = [
-  { species: 'monstera_deliciosa', name: 'Monstera', pot: 6000, periodH: 70 },
-  { species: 'nephrolepis_exaltata', name: 'Boston fern', pot: 2500, periodH: 28 },
-  { species: 'dracaena_trifasciata', name: 'Snake plant', pot: 3000, periodH: 260 },
-  { species: 'ocimum_basilicum', name: 'Kitchen basil', pot: 1200, periodH: 20 },
-  { species: 'curio_rowleyanus', name: 'String of pearls', pot: 800, periodH: 160, issue: 'stuck' },
+const DEMO: {
+  species: string;
+  name: string;
+  pot: number;
+  periodH: number;
+  bottle: number;
+  bottleFrac: number;
+  batteryMv: number;
+  issue?: SensorIssue;
+}[] = [
+  {
+    species: 'monstera_deliciosa',
+    name: 'Monstera',
+    pot: 6000,
+    periodH: 70,
+    bottle: 2000,
+    bottleFrac: 0.62,
+    batteryMv: 4380,
+  },
+  {
+    species: 'nephrolepis_exaltata',
+    name: 'Boston fern',
+    pot: 2500,
+    periodH: 28,
+    bottle: 1500,
+    bottleFrac: 0.48,
+    batteryMv: 4210,
+  },
+  {
+    species: 'dracaena_trifasciata',
+    name: 'Snake plant',
+    pot: 3000,
+    periodH: 260,
+    bottle: 1000,
+    bottleFrac: 0.9,
+    batteryMv: 3540,
+  },
+  {
+    species: 'ocimum_basilicum',
+    name: 'Kitchen basil',
+    pot: 1200,
+    periodH: 20,
+    bottle: 1000,
+    bottleFrac: 0.18,
+    batteryMv: 4450,
+  },
+  {
+    species: 'curio_rowleyanus',
+    name: 'String of pearls',
+    pot: 800,
+    periodH: 160,
+    bottle: 500,
+    bottleFrac: 0.7,
+    batteryMv: 4100,
+    issue: 'stuck',
+  },
 ];
 
 function defaultSettings(): Settings {
@@ -60,27 +136,10 @@ function defaultSettings(): Settings {
     tzName: 'UTC',
     southernHemisphere: false,
     waterWindow: { startH: 7, endH: 21 },
-    quietHours: { startH: 22, endH: 8 },
-    sampleIntervalS: 60,
+    checkInMin: 5,
     logIntervalMin: 10,
     automationEnabled: true,
-    buzzerEnabled: true,
-    leakSensorEnabled: true,
-    limits: {
-      hardMaxPulseMl: 250,
-      hardMaxDailyMlPerPlant: 1500,
-      hardMaxDailyMlTotal: 5000,
-      hardMaxOnTimeS: 120,
-    },
-    reservoir: {
-      scaleEnabled: true,
-      floatSwitchEnabled: true,
-      capacityMl: 1800,
-      fullHeightMm: 250,
-      lowPct: 20,
-      emptyMl: 150,
-      lowDaysLeft: 2,
-    },
+    limits: { hardMaxPulseMl: 250, hardMaxDailyMlPerPlant: 1500, hardMaxOnTimeS: 120 },
     notify: { enabled: false, server: 'https://ntfy.sh', topic: '', tokenSet: false, minSeverity: 'warning' },
   };
 }
@@ -104,76 +163,144 @@ function deepMerge<T>(base: T, patch: unknown): T {
   return out as T;
 }
 
+const nodeId = (i: number) => `a0b1c2d3e4${(0xf0 + i).toString(16)}`;
+
 export class MockDevice implements Transport {
   settings = defaultSettings();
   plants: PlantProfile[] = [];
   live = new Map<string, Live>();
+  waiting: NewNode[] = [];
   alerts: Alert[] = [];
   events: DeviceEvent[] = [];
-  reservoirMl = 0;
   emergencyStop = false;
   setupRequired: boolean;
   password = 'plantcare';
-  dose: Dose | null = null;
-  lastDose: Status['lastDose'] = null;
   private nextAlertId = 1;
   private timer: ReturnType<typeof setInterval> | null = null;
   private listeners = new Set<StreamHandler>();
   private lastTick = Date.now();
-  private simMs = 0; // simulated clock for soaking, advanced by tick()
+  private simMs = 0; // simulated clock, advanced by tick()
   private bootS = nowS() - 3 * 86400 - 4200;
 
   constructor(opts: { setupRequired?: boolean; autoTick?: boolean } = {}) {
     this.setupRequired = opts.setupRequired ?? false;
-    this.reservoirMl = this.syntheticReservoir(nowS());
     DEMO.forEach((d, i) => {
       const s = findSpecies(d.species)!;
-      const p = applySpecies({ ...defaultProfile(i), ...limitsForPot(d.pot), potVolumeMl: d.pot }, s);
+      const p = applySpecies({ ...defaultProfile(nodeId(i)), ...limitsForPot(d.pot), potVolumeMl: d.pot }, s);
       p.id = d.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
       p.name = d.name;
-      p.outlet.flowMlPerS = 2.2;
+      p.pump.flowMlPerS = 1.6;
+      p.bottle.capacityMl = d.bottle;
       this.plants.push(p);
-      const phase = (i * 0.37) % 1;
-      this.live.set(p.id, {
-        moisture: 0,
+      const lv = this.newLive(p, {
         mlToday: Math.round(40 + i * 25),
-        lastWateredAt: null,
-        state: 'idle',
-        soakUntil: 0,
-        pulses: 0,
-        sessionMl: 0,
-        lockedOut: false,
         mlPerPct: Math.round((p.potVolumeMl / 120) * 10) / 10,
         sensor: d.issue ? 'suspect' : 'ok',
         issue: d.issue ?? 'ok',
         dryPerHour: (p.moisture.target - p.moisture.min) / d.periodH,
         periodH: d.periodH,
-        phase,
+        phase: (i * 0.37) % 1,
+        bottleMl: Math.round(d.bottle * d.bottleFrac),
+        refillDays: Math.max(
+          3,
+          Math.round(
+            (d.bottle / ((p.moisture.target - p.moisture.min) * (p.potVolumeMl / 120))) * (d.periodH / 24),
+          ),
+        ),
+        batteryMv: d.batteryMv,
+        pumpLearned: i !== 4,
+        flowFactor: [1.04, 0.97, 1, 1.08, 1][i],
+        checkInAt: ((i + 1) * this.checkInMs()) / (DEMO.length + 1),
+        lastSeenAt:
+          nowS() - Math.round(((DEMO.length - i) * this.settings.checkInMin * 60) / (DEMO.length + 1)),
+        linkPct: [100, 97, 100, 88, 100][i],
       });
-      const lv = this.live.get(p.id)!;
       lv.moisture = this.synthetic(p, lv, nowS());
       lv.lastWateredAt = this.lastSyntheticWatering(lv, nowS());
+      this.live.set(p.id, lv);
+    });
+    this.waiting.push({
+      id: '34b7da5c11f0',
+      board: 'xiao-esp32c3',
+      firmware: '0.2.0',
+      lastSeenAt: nowS() - 40,
     });
     this.seedEvents();
     this.raise(
       'warning',
       'sensor_fault',
-      4,
+      'string-of-pearls',
       'String of pearls: moisture sensor reading has not changed for 12 hours.',
       nowS() - 5400,
     );
     this.raise(
       'info',
       'humidity_out_of_range',
-      1,
+      'boston-fern',
       'Boston fern prefers 60-90 % humidity; it has been 47 % for over 2 hours.',
       nowS() - 9000,
+    );
+    this.raise(
+      'warning',
+      'bottle_low',
+      'kitchen-basil',
+      "Kitchen basil's bottle is low: about 180 ml (18%), about 0.9 days left.",
+      nowS() - 3600,
+    );
+    this.raise(
+      'warning',
+      'battery_low',
+      'snake-plant',
+      'Snake plant: batteries are low (3.54 V). Replace them soon.',
+      nowS() - 20000,
     );
     if (opts.autoTick !== false) this.timer = setInterval(() => this.tick(), 1000);
   }
 
   dispose() {
     if (this.timer) clearInterval(this.timer);
+  }
+
+  private checkInMs() {
+    return (this.settings.checkInMin * 60 * 1000) / SPEED;
+  }
+
+  private newLive(p: PlantProfile, over: Partial<Live> = {}): Live {
+    return {
+      moisture: 45,
+      mlToday: 0,
+      lastWateredAt: null,
+      state: 'idle',
+      soakUntil: 0,
+      pulses: 0,
+      sessionMl: 0,
+      lockedOut: false,
+      mlPerPct: null,
+      sensor: 'ok',
+      issue: 'ok',
+      dryPerHour: 0.5,
+      periodH: 40,
+      phase: 0,
+      dose: null,
+      bottleMl: p.bottle.capacityMl,
+      bottleEmpty: false,
+      emptyReason: 'none',
+      refillDays: 7,
+      pumpLearned: false,
+      lastRun: 'ok',
+      flowFactor: 1,
+      batteryMv: 4600,
+      linkPct: 100,
+      online: true,
+      checkInAt: this.simMs + this.checkInMs(),
+      lastSeenAt: nowS(),
+      queue: [],
+      nextCmdId: 1,
+      configPending: false,
+      repair: false,
+      buttonAt: 0,
+      ...over,
+    };
   }
 
   // ---------------------------------------------------------------- simulation
@@ -189,6 +316,14 @@ export class MockDevice implements Transport {
     return Math.round(t - frac * lv.periodH * 3600);
   }
 
+  // A sawtooth: full at each refill, down to ~15 % before the next.
+  private syntheticBottle(p: PlantProfile, lv: Live, t: number) {
+    const periodS = lv.refillDays * 86400;
+    const nowFrac = 1 - lv.bottleMl / p.bottle.capacityMl;
+    const frac = ((((t - nowS()) / periodS + nowFrac) % 1) + 1) % 1;
+    return p.bottle.capacityMl * (1 - 0.85 * frac);
+  }
+
   private env(t: number) {
     const hour = (((t / 3600) % 24) + 24) % 24;
     const day = Math.sin(((hour - 9) / 24) * 2 * Math.PI);
@@ -198,12 +333,6 @@ export class MockDevice implements Transport {
       humidityPct: 51 - 7 * day,
       lux: Math.max(0, 9500 * light * (0.85 + 0.15 * Math.sin(t / 86400))),
     };
-  }
-
-  private syntheticReservoir(t: number) {
-    const periodS = 3.5 * 86400;
-    const frac = ((((t - 2 * 86400) / periodS) % 1) + 1) % 1;
-    return 1750 - 1450 * frac;
   }
 
   private seedEvents() {
@@ -222,26 +351,72 @@ export class MockDevice implements Transport {
           detail: `${Math.max(1, Math.round(ml / p.maxPulseMl))} pulses, ${p.moisture.min - 1}% -> ${p.moisture.target}%, target reached`,
         });
       }
-    }
-    for (let t = now - 2 * 86400; t > from; t -= 9 * 86400) {
-      this.events.push({
-        ts: t,
-        type: 'refill',
-        plantId: null,
-        code: 'refill',
-        ml: 3900,
-        detail: 'Reservoir refilled (+3900 ml)',
-      });
+      const periodS = lv.refillDays * 86400;
+      const sinceRefill = ((1 - lv.bottleMl / p.bottle.capacityMl) / 0.85) * periodS;
+      for (let t = now - sinceRefill; t > from; t -= periodS) {
+        this.events.push({
+          ts: Math.round(t),
+          type: 'refill',
+          plantId: p.id,
+          code: 'refill',
+          ml: p.bottle.capacityMl,
+          detail: 'Bottle refilled',
+        });
+      }
     }
     this.events.sort((a, b) => a.ts - b.ts);
   }
 
   private plantStatus(p: PlantProfile): PlantStatus {
-    const lv = this.live.get(p.id)!;
+    const lv = this.live.get(p.id);
+    const targetPct =
+      p.style === 'soak_and_dry' ? Math.max(p.moisture.target, p.moisture.max - 3) : p.moisture.target;
+    if (!lv || !p.node) {
+      return {
+        id: p.id,
+        name: p.name,
+        node: p.node,
+        online: false,
+        lastSeenAt: null,
+        nextCheckInS: null,
+        firmware: null,
+        battery: null,
+        linkPct: null,
+        moisturePct: null,
+        raw: null,
+        sensor: 'unknown',
+        issue: 'unknown',
+        state: 'unknown',
+        triggerPct: p.moisture.min,
+        targetPct,
+        mlToday: 0,
+        lastWateredAt: null,
+        lockedOut: false,
+        mlPerPct: null,
+        soakRemainingS: 0,
+        bottle: null,
+        pump: { learned: false, lastRun: 'ok' },
+        dosing: null,
+        queued: [],
+        configPending: false,
+        repairRequested: false,
+        buttonPressed: false,
+      };
+    }
+    const pct = (lv.bottleMl / p.bottle.capacityMl) * 100;
+    const usage = (p.moisture.target - p.moisture.min) * (lv.mlPerPct ?? 10) * (24 / lv.periodH);
+    const daysLeft = usage > 1 ? lv.bottleMl / usage : null;
+    const battPct = Math.round(Math.min(100, Math.max(0, ((lv.batteryMv - 3300) / (4650 - 3300)) * 100)));
     return {
       id: p.id,
       name: p.name,
-      channel: p.channel,
+      node: p.node,
+      online: lv.online,
+      lastSeenAt: lv.lastSeenAt,
+      nextCheckInS: lv.online ? Math.max(0, Math.round(((lv.checkInAt - this.simMs) / 1000) * SPEED)) : null,
+      firmware: '0.2.0',
+      battery: { mv: lv.batteryMv, pct: battPct, low: lv.batteryMv < 3600 },
+      linkPct: lv.linkPct,
       moisturePct:
         lv.sensor === 'failed' && lv.issue !== 'no_response' ? null : Math.round(lv.moisture * 10) / 10,
       raw: Math.round(
@@ -249,32 +424,44 @@ export class MockDevice implements Transport {
       ),
       sensor: lv.sensor,
       issue: lv.issue,
-      state: lv.state,
+      state: lv.dose ? 'watering' : lv.state,
       triggerPct: p.moisture.min,
-      targetPct:
-        p.style === 'soak_and_dry' ? Math.max(p.moisture.target, p.moisture.max - 3) : p.moisture.target,
+      targetPct,
       mlToday: Math.round(lv.mlToday),
       lastWateredAt: lv.lastWateredAt,
       lockedOut: lv.lockedOut,
       mlPerPct: lv.mlPerPct,
       soakRemainingS:
         lv.state === 'soaking' ? Math.max(0, Math.round((lv.soakUntil - this.simMs) / 1000) * SPEED) : 0,
+      bottle: {
+        ml: Math.round(lv.bottleMl),
+        pct: Math.round(pct * 10) / 10,
+        capacityMl: p.bottle.capacityMl,
+        daysLeft: daysLeft === null ? null : Math.round(daysLeft * 10) / 10,
+        low: !lv.bottleEmpty && (pct < p.bottle.lowPct || (daysLeft !== null && daysLeft < 2 && pct < 50)),
+        empty: lv.bottleEmpty,
+        emptyReason: lv.emptyReason,
+        flowFactor: lv.flowFactor,
+      },
+      pump: { learned: lv.pumpLearned && p.pump.currentSense, lastRun: lv.lastRun },
+      dosing: lv.dose ? { ml: lv.dose.ml, dispensedMl: Math.round(lv.dose.dispensed * 10) / 10 } : null,
+      queued: lv.queue.slice(),
+      configPending: lv.configPending,
+      repairRequested: lv.repair,
+      buttonPressed: lv.buttonAt > 0 && Date.now() - lv.buttonAt < 60000,
     };
   }
 
   status(): Status {
     const now = nowS();
     const env = this.env(now);
-    const cap = this.settings.reservoir.capacityMl;
-    const pct = (this.reservoirMl / cap) * 100;
-    const usage = 420;
-    const daysLeft = this.reservoirMl / usage;
     const counts = { critical: 0, warning: 0, info: 0 };
     for (const a of this.alerts) if (a.active) counts[a.severity]++;
+    const withNode = this.plants.filter((p) => p.node && this.live.has(p.id));
     return {
       device: {
         name: this.settings.deviceName,
-        version: '0.1.0-mock',
+        version: '0.2.0-mock',
         uptimeS: now - this.bootS,
         timeValid: true,
         now,
@@ -293,19 +480,6 @@ export class MockDevice implements Transport {
       },
       storage: { sdOk: true, sdUsedMb: 18.4, sdTotalMb: 29819.4 },
       automation: { enabled: this.settings.automationEnabled, emergencyStop: this.emergencyStop },
-      leak: false,
-      reservoir: {
-        scaleValid: true,
-        ml: Math.round(this.reservoirMl),
-        pct: Math.round(pct * 10) / 10,
-        capacityMl: cap,
-        daysLeft: Math.round(daysLeft * 10) / 10,
-        low: pct < this.settings.reservoir.lowPct || daysLeft < this.settings.reservoir.lowDaysLeft,
-        empty: this.reservoirMl < this.settings.reservoir.emptyMl,
-        floatLow: false,
-        scaleCalibrated: true,
-        scaleRaw: 1_843_210,
-      },
       environment: {
         valid: true,
         tempC: Math.round(env.tempC * 10) / 10,
@@ -316,18 +490,15 @@ export class MockDevice implements Transport {
           ) / 100,
         lux: Math.round(env.lux),
       },
-      dose: this.dose
-        ? {
-            plantId: this.dose.plantId,
-            channel: this.plants.find((p) => p.id === this.dose!.plantId)?.channel ?? 0,
-            kind: this.dose.kind,
-            ml: this.dose.ml,
-            dispensedMl: Math.round(this.dose.dispensed * 10) / 10,
-          }
-        : null,
-      lastDose: this.lastDose,
-      mlTodayTotal: Math.round([...this.live.values()].reduce((a, l) => a + l.mlToday, 0)),
       plants: this.plants.map((p) => this.plantStatus(p)),
+      newNodes: this.waiting.slice(),
+      radio: {
+        channel: 6,
+        checkInMin: this.settings.checkInMin,
+        online: withNode.filter((p) => this.live.get(p.id)!.online).length,
+        total: withNode.length,
+      },
+      mlTodayTotal: Math.round([...this.live.values()].reduce((a, l) => a + l.mlToday, 0)),
       alerts: counts,
     };
   }
@@ -345,17 +516,15 @@ export class MockDevice implements Transport {
   private raise(
     severity: Alert['severity'],
     code: string,
-    channel: number | null,
+    plantId: string | null,
     message: string,
     at = nowS(),
   ) {
-    if (this.alerts.some((a) => a.active && a.code === code && a.channel === channel)) return;
-    const plantId = channel === null ? null : (this.plants.find((p) => p.channel === channel)?.id ?? null);
+    if (this.alerts.some((a) => a.active && a.code === code && a.plantId === plantId)) return;
     this.alerts.push({
       id: this.nextAlertId++,
       code,
       severity,
-      channel,
       plantId,
       active: true,
       acked: false,
@@ -365,9 +534,9 @@ export class MockDevice implements Transport {
     });
   }
 
-  private clear(code: string, channel: number | null) {
+  private clear(code: string, plantId: string | null) {
     for (const a of this.alerts) {
-      if (a.active && a.code === code && a.channel === channel) {
+      if (a.active && a.code === code && a.plantId === plantId) {
         a.active = false;
         a.clearedAt = nowS();
       }
@@ -378,16 +547,13 @@ export class MockDevice implements Transport {
     this.lastTick = Date.now();
     this.simMs += realMs;
     const simH = (realMs / 3_600_000) * SPEED;
-    // Active dose: 2.2 ml/s, real time.
-    if (this.dose) {
-      const step = Math.min(this.dose.ml - this.dose.dispensed, (realMs / 1000) * 2.2 * 4);
-      this.dose.dispensed += step;
-      this.reservoirMl -= step;
-      if (this.dose.dispensed >= this.dose.ml - 0.01) this.finishDose();
-    }
     for (const p of this.plants) {
-      const lv = this.live.get(p.id)!;
+      const lv = this.live.get(p.id);
+      if (!lv || !p.node) continue;
       lv.moisture = Math.max(0, lv.moisture - lv.dryPerHour * simH);
+      if (lv.dose) this.pour(p, lv, realMs);
+      if (lv.online && this.simMs >= lv.checkInAt) this.checkIn(p, lv);
+
       if (lv.state === 'soaking' && this.simMs >= lv.soakUntil) {
         const target = this.plantStatus(p).targetPct;
         if (lv.moisture >= target - 0.5 || lv.pulses >= 6) {
@@ -405,43 +571,121 @@ export class MockDevice implements Transport {
         }
       }
       const auto = this.settings.automationEnabled && !this.emergencyStop && p.enabled && p.autoWater;
-      if (auto && lv.state === 'idle' && lv.sensor !== 'failed' && lv.moisture < p.moisture.min) {
+      const canPump = !lv.bottleEmpty && !lv.lockedOut;
+      if (auto && canPump && lv.state === 'idle' && lv.sensor !== 'failed' && lv.moisture < p.moisture.min) {
         lv.state = 'waiting';
         lv.pulses = 0;
         lv.sessionMl = 0;
       }
-      if (lv.state === 'waiting' && !this.dose && auto) {
+      if (lv.state === 'waiting' && !lv.dose && auto && canPump) {
         const ml = Math.min(
           p.maxPulseMl,
           Math.max(20, (this.plantStatus(p).targetPct - lv.moisture) * (lv.mlPerPct ?? 10) * 0.7),
         );
-        this.dose = { plantId: p.id, ml: Math.round(ml), dispensed: 0, kind: 'auto' };
+        lv.dose = { ml: Math.round(ml), dispensed: 0, kind: 'auto' };
         lv.state = 'watering';
       }
     }
     this.emit('status', this.status());
   }
 
-  private finishDose() {
-    const d = this.dose!;
-    const p = this.plants.find((x) => x.id === d.plantId);
-    this.dose = null;
-    this.lastDose = {
-      plantId: d.plantId,
-      channel: p?.channel ?? 0,
-      ml: Math.round(d.dispensed * 10) / 10,
-      onTimeMs: Math.round((d.dispensed / 2.2) * 1000),
-      closedLoop: true,
-      at: nowS(),
-    };
-    if (!p) return;
-    const lv = this.live.get(p.id)!;
+  // Each node in turn: the station's mailbox is delivered when it checks in.
+  private checkIn(p: PlantProfile, lv: Live) {
+    lv.checkInAt = this.simMs + this.checkInMs();
+    lv.lastSeenAt = nowS();
+    lv.configPending = false;
+    const queue = lv.queue;
+    lv.queue = [];
+    for (const c of queue) {
+      if (c.kind === 'water' || c.kind === 'timed_run') {
+        if (this.emergencyStop || lv.lockedOut || lv.bottleEmpty || lv.dose) continue;
+        const timed = c.kind === 'timed_run';
+        const ml = timed ? c.arg * p.pump.flowMlPerS * lv.flowFactor : c.arg;
+        lv.dose = {
+          ml: Math.min(ml, this.settings.limits.hardMaxPulseMl),
+          dispensed: 0,
+          kind: timed ? 'timed' : 'manual',
+        };
+        lv.state = 'idle';
+      } else if (c.kind === 'refilled') {
+        this.refill(p, lv);
+      } else if (c.kind === 'clear_faults') {
+        lv.lockedOut = false;
+        if (lv.issue === 'no_response') {
+          lv.issue = 'ok';
+          lv.sensor = 'ok';
+        }
+        this.event('system', p.id, 'lockout_cleared', 0, `${p.name}: faults cleared by user`);
+      }
+    }
+  }
+
+  private refill(p: PlantProfile, lv: Live) {
+    lv.bottleMl = p.bottle.capacityMl;
+    lv.bottleEmpty = false;
+    lv.emptyReason = 'none';
+    this.clear('bottle_empty', p.id);
+    this.clear('bottle_low', p.id);
+    this.event('refill', p.id, 'refill', p.bottle.capacityMl, 'Bottle refilled');
+  }
+
+  private pour(p: PlantProfile, lv: Live, realMs: number) {
+    const d = lv.dose!;
+    const flow = p.pump.flowMlPerS * lv.flowFactor;
+    const step = Math.min(d.ml - d.dispensed, (realMs / 1000) * flow * POUR_SPEED);
+    const usable = Math.max(0, lv.bottleMl - p.bottle.reserveMl);
+    if (step > usable) {
+      // The pump starts sucking air: it feels it, stops, and calls the bottle empty.
+      d.dispensed += usable;
+      lv.bottleMl -= usable;
+      lv.bottleEmpty = true;
+      lv.emptyReason = p.pump.currentSense ? 'pump_dry' : 'gauge';
+      lv.lastRun = p.pump.currentSense ? 'dry' : 'ok';
+      this.raise(
+        'critical',
+        'bottle_empty',
+        p.id,
+        `${p.name}'s bottle is empty: the pump ran dry. Refill it, then press the node's button.`,
+      );
+      this.finishDose(p, lv);
+      return;
+    }
+    d.dispensed += step;
+    lv.bottleMl -= step;
+    if (d.dispensed >= d.ml - 0.01) this.finishDose(p, lv);
+  }
+
+  private finishDose(p: PlantProfile, lv: Live) {
+    const d = lv.dose!;
+    lv.dose = null;
+    if (d.kind === 'timed') {
+      this.event(
+        'watering',
+        p.id,
+        'timed',
+        d.dispensed,
+        `Timed pump run (${(d.dispensed / (p.pump.flowMlPerS * lv.flowFactor)).toFixed(1)} s)`,
+      );
+      return;
+    }
     lv.mlToday += d.dispensed;
     lv.moisture = Math.min(100, lv.moisture + d.dispensed / (lv.mlPerPct ?? 10));
+    if (lv.bottleMl < (p.bottle.lowPct / 100) * p.bottle.capacityMl && !lv.bottleEmpty) {
+      this.raise(
+        'warning',
+        'bottle_low',
+        p.id,
+        `${p.name}'s bottle is low: about ${Math.round(lv.bottleMl)} ml.`,
+      );
+    }
     if (d.kind === 'manual') {
       lv.state = 'idle';
       lv.lastWateredAt = nowS();
       this.event('watering', p.id, 'manual', d.dispensed, 'Manual watering');
+      return;
+    }
+    if (lv.bottleEmpty) {
+      lv.state = 'idle';
       return;
     }
     lv.pulses++;
@@ -450,21 +694,45 @@ export class MockDevice implements Transport {
     lv.soakUntil = this.simMs + (p.soakMin * 60 * 1000) / SPEED;
   }
 
+  private queue(p: PlantProfile, kind: QueuedCommand['kind'], arg: number): TransportResponse {
+    const lv = this.live.get(p.id);
+    if (!lv || !p.node) return fail(409, 'no_node', 'This plant has no node.');
+    if (lv.queue.length >= 8) return fail(409, 'busy');
+    const c = { id: lv.nextCmdId++, kind, arg };
+    lv.queue.push(c);
+    const etaS = lv.online ? Math.max(0, Math.round(((lv.checkInAt - this.simMs) / 1000) * SPEED)) : null;
+    return ok({ queued: true, id: c.id, etaS }, 202);
+  }
+
+  // Simulates someone pressing the node's button (refilled + highlight).
+  pressButton(plantId: string) {
+    const p = this.plants.find((x) => x.id === plantId);
+    const lv = p && this.live.get(p.id);
+    if (!p || !lv) return;
+    lv.buttonAt = Date.now();
+    this.refill(p, lv);
+    this.checkIn(p, lv);
+  }
+
   // ---------------------------------------------------------------- history
 
   history(plantId: string, from: number, to: number, points: number): History {
     const p = this.plants.find((x) => x.id === plantId);
-    if (!p) return { plantId, from, to, points: [] };
-    const lv = this.live.get(p.id)!;
+    const lv = p && this.live.get(p.id);
+    if (!p || !lv) return { plantId, from, to, points: [] };
     const n = Math.max(10, Math.min(300, points));
     const step = (to - from) / n;
-    const out: [number, number | null][] = [];
+    const out: History['points'] = [];
     for (let i = 0; i < n; i++) {
       const t = Math.round(from + step * (i + 0.5));
       if (t < this.bootS - 365 * 86400) continue;
-      out.push([t, Math.round(this.synthetic(p, lv, t) * 10) / 10]);
+      out.push([
+        t,
+        Math.round(this.synthetic(p, lv, t) * 10) / 10,
+        Math.round(this.syntheticBottle(p, lv, t)),
+      ]);
     }
-    if (to >= nowS() - 60) out.push([nowS(), Math.round(lv.moisture * 10) / 10]);
+    if (to >= nowS() - 60) out.push([nowS(), Math.round(lv.moisture * 10) / 10, Math.round(lv.bottleMl)]);
     return { plantId, from, to, points: out };
   }
 
@@ -475,13 +743,7 @@ export class MockDevice implements Transport {
     for (let i = 0; i < n; i++) {
       const t = Math.round(from + step * (i + 0.5));
       const e = this.env(t);
-      out.push([
-        t,
-        Math.round(e.tempC * 10) / 10,
-        Math.round(e.humidityPct),
-        Math.round(e.lux),
-        Math.round(this.syntheticReservoir(t)),
-      ]);
+      out.push([t, Math.round(e.tempC * 10) / 10, Math.round(e.humidityPct), Math.round(e.lux)]);
     }
     return { from, to, points: out };
   }
@@ -491,6 +753,27 @@ export class MockDevice implements Transport {
   stream(_token: string, onEvent: StreamHandler): () => void {
     this.listeners.add(onEvent);
     return () => this.listeners.delete(onEvent);
+  }
+
+  private savePlant(p: PlantProfile, prevNode: string | null): TransportResponse | null {
+    if (!p.name) return fail(400, 'invalid', 'name is required');
+    if (p.node && this.plants.some((x) => x.id !== p.id && x.node === p.node)) {
+      return fail(400, 'invalid', `node ${p.node} already waters another plant`);
+    }
+    if (p.node !== prevNode) {
+      this.waiting = this.waiting.filter((n) => n.id !== p.node);
+      const lv = this.live.get(p.id) ?? this.newLive(p);
+      if (p.node) {
+        lv.configPending = true;
+        lv.online = true;
+        lv.checkInAt = this.simMs + this.checkInMs() / 4;
+        this.live.set(p.id, lv);
+      }
+    } else {
+      const lv = this.live.get(p.id);
+      if (lv) lv.configPending = true;
+    }
+    return null;
   }
 
   async request(
@@ -513,7 +796,7 @@ export class MockDevice implements Transport {
     if (is('GET', 'info')) {
       return ok({
         name: this.settings.deviceName,
-        version: '0.1.0-mock',
+        version: '0.2.0-mock',
         setupRequired: this.setupRequired,
         timeValid: true,
         apActive: false,
@@ -546,10 +829,8 @@ export class MockDevice implements Transport {
 
     if (is('GET', 'plants')) return ok(this.plants);
     if (is('POST', 'plants')) {
-      const p = deepMerge(defaultProfile(Number(b.channel ?? 0)), b) as PlantProfile;
-      if (!p.name) return fail(400, 'invalid', 'name is required');
-      if (this.plants.some((x) => x.channel === p.channel))
-        return fail(400, 'invalid', `channel ${p.channel + 1} is already used`);
+      if (this.plants.length >= MAX_PLANTS) return fail(400, 'invalid', `at most ${MAX_PLANTS} plants`);
+      const p = deepMerge(defaultProfile(null), b) as PlantProfile;
       p.id =
         p.id ||
         p.name
@@ -557,36 +838,20 @@ export class MockDevice implements Transport {
           .replace(/[^a-z0-9]+/g, '-')
           .replace(/^-|-$/g, '') ||
         'plant';
+      const err = this.savePlant(p, null);
+      if (err) return err;
       this.plants.push(p);
-      this.live.set(p.id, {
-        moisture: 45,
-        mlToday: 0,
-        lastWateredAt: null,
-        state: 'idle',
-        soakUntil: 0,
-        pulses: 0,
-        sessionMl: 0,
-        lockedOut: false,
-        mlPerPct: null,
-        sensor: 'ok',
-        issue: 'ok',
-        dryPerHour: 0.5,
-        periodH: 40,
-        phase: 0,
-      });
       return ok(p, 201);
     }
     if (seg[0] === 'plants' && seg[1]) {
       const p = this.plants.find((x) => x.id === seg[1]);
       if (!p) return fail(404, 'not_found');
-      const lv = this.live.get(p.id)!;
       if (is('GET', 'plants', '*')) return ok(p);
       if (is('PUT', 'plants', '*')) {
         const { id: _ignored, ...rest } = b;
         const next = deepMerge(p, rest);
-        if (this.plants.some((x) => x.id !== p.id && x.channel === next.channel)) {
-          return fail(400, 'invalid', `channel ${next.channel + 1} is already used`);
-        }
+        const err = this.savePlant(next, p.node);
+        if (err) return err;
         Object.assign(p, next);
         return ok(p);
       }
@@ -595,36 +860,38 @@ export class MockDevice implements Transport {
         this.live.delete(p.id);
         return ok();
       }
-      if (is('POST', 'plants', '*', 'water') || is('POST', 'plants', '*', 'timed-run')) {
-        if (this.emergencyStop) return fail(409, 'emergency_stop');
-        if (this.dose) return fail(409, 'busy');
-        if (lv.lockedOut) return fail(409, 'lockout');
-        const ml = seg[2] === 'water' ? Number(b.ml ?? 0) : Number(b.seconds ?? 0) * p.outlet.flowMlPerS;
-        if (!(ml >= 5)) return fail(409, 'invalid_amount');
-        this.dose = {
-          plantId: p.id,
-          ml: Math.min(ml, this.settings.limits.hardMaxPulseMl),
-          dispensed: 0,
-          kind: 'manual',
-        };
-        lv.state = 'watering';
-        return ok();
+      if (is('POST', 'plants', '*', 'water')) {
+        if (this.emergencyStop) return fail(409, 'emergency_stop', 'Watering is stopped. Resume first.');
+        const ml = Number(b.ml ?? 0);
+        if (!(ml >= 5 && ml <= this.settings.limits.hardMaxPulseMl)) return fail(400, 'invalid_amount');
+        return this.queue(p, 'water', ml);
       }
-      if (is('POST', 'plants', '*', 'clear-faults')) {
-        lv.lockedOut = false;
-        if (lv.issue === 'no_response') {
-          lv.issue = 'ok';
-          lv.sensor = 'ok';
-        }
-        return ok();
+      if (is('POST', 'plants', '*', 'timed-run')) {
+        const s = Number(b.seconds ?? 0);
+        if (!(s >= 1 && s <= 60)) return fail(400, 'invalid_amount');
+        return this.queue(p, 'timed_run', s);
       }
+      if (is('POST', 'plants', '*', 'refilled')) return this.queue(p, 'refilled', Number(b.ml ?? 0));
+      if (is('POST', 'plants', '*', 'clear-faults')) return this.queue(p, 'clear_faults', 0);
+      if (is('POST', 'plants', '*', 'identify')) return this.queue(p, 'identify', 0);
       if (is('POST', 'plants', '*', 'calibrate')) {
         const raw = this.plantStatus(p).raw;
+        if (raw === null) return fail(400, 'invalid', "no reading from this plant's node yet");
         if (b.point === 'dry') p.calibration.rawDry = raw;
         else if (b.point === 'wet') p.calibration.rawWet = raw;
         else return fail(400, 'invalid', 'point must be dry or wet');
-        return ok({ raw, calibration: p.calibration });
+        const lv = this.live.get(p.id);
+        if (lv) lv.configPending = true;
+        return ok({ raw, ageS: 40, calibration: p.calibration });
       }
+    }
+    if (is('POST', 'nodes', '*', 'repair')) {
+      const p = this.plants.find((x) => x.node === seg[1]);
+      const lv = p && this.live.get(p.id);
+      if (!lv) return fail(404, 'not_found');
+      lv.repair = false;
+      lv.configPending = true;
+      return ok();
     }
 
     if (is('GET', 'history')) {
@@ -678,24 +945,21 @@ export class MockDevice implements Transport {
         this.settings.notify = { ...this.settings.notify, ...(n as object) };
         if (typeof t === 'string') this.settings.notify.tokenSet = t.length > 0;
       }
+      for (const lv of this.live.values()) lv.configPending = true;
       return ok(this.settings);
-    }
-
-    if (is('POST', 'reservoir', 'tare') || is('POST', 'reservoir', 'calibrate')) return ok();
-    if (is('POST', 'reservoir', 'refilled')) {
-      this.reservoirMl = Math.min(this.settings.reservoir.capacityMl, this.reservoirMl + Number(b.ml ?? 0));
-      this.event('refill', null, 'manual_refill', Number(b.ml ?? 0), 'Refill recorded from the dashboard');
-      return ok();
     }
 
     if (is('POST', 'system', 'stop')) {
       this.emergencyStop = true;
-      this.dose = null;
+      for (const lv of this.live.values()) {
+        lv.dose = null;
+        lv.state = 'idle';
+      }
       this.raise(
         'info',
         'emergency_stop',
         null,
-        `Emergency stop (${String(b.reason ?? 'stopped from the dashboard')}). Watering is disabled until you resume.`,
+        `Emergency stop (${String(b.reason ?? 'stopped from the dashboard')}). Every node stops watering at its next check-in, until you resume.`,
       );
       this.event('system', null, 'emergency_stop', 0, String(b.reason ?? 'stopped from the dashboard'));
       return ok();
@@ -713,7 +977,7 @@ export class MockDevice implements Transport {
     if (is('POST', 'system', 'reboot') || is('POST', 'system', 'time')) return ok();
 
     if (is('GET', 'config', 'backup')) {
-      return ok({ version: '0.1.0-mock', exportedAt: nowS(), settings: this.settings, plants: this.plants });
+      return ok({ version: '0.2.0-mock', exportedAt: nowS(), settings: this.settings, plants: this.plants });
     }
     if (is('POST', 'config', 'restore')) {
       this.settings = deepMerge(this.settings, b.settings);

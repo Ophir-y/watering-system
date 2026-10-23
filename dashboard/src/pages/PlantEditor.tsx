@@ -17,18 +17,22 @@ import {
 } from '../data/species';
 import { monthName } from '../lib/format';
 import { validatePlant } from '../lib/validate';
-import { useDevice } from '../state/device';
+import { useDevice, useStatus } from '../state/device';
 import { useToast } from '../state/toast';
 
-export function PlantEditor({ id }: { id?: string }) {
+// node: a plant node waiting to be added (from "New plant node found").
+export function PlantEditor({ id, node }: { id?: string; node?: string }) {
   const { plants, reloadPlants, refresh } = useDevice();
+  const status = useStatus();
   const existing = id ? plants.find((p) => p.id === id) : undefined;
-  const used = new Set(plants.filter((p) => p.id !== id).map((p) => p.channel));
-  const firstFree = [0, 1, 2, 3, 4, 5, 6, 7].find((c) => !used.has(c)) ?? 0;
+  const waiting = status.newNodes.map((n) => n.id);
 
   const [draft, setDraft] = useState<PlantProfile>(() =>
-    existing ? structuredClone(existing) : defaultProfile(firstFree),
+    existing ? structuredClone(existing) : defaultProfile(node ?? waiting[0] ?? null),
   );
+  const nodeOptions = [
+    ...new Set([...(existing?.node ? [existing.node] : []), ...(draft.node ? [draft.node] : []), ...waiting]),
+  ];
   const [limitsTouched, setLimitsTouched] = useState(Boolean(existing));
   const [query, setQuery] = useState('');
   const [saving, setSaving] = useState(false);
@@ -125,15 +129,21 @@ export function PlantEditor({ id }: { id?: string }) {
               placeholder="e.g. Kitchen basil"
             />
             <SelectField
-              label="Channel"
-              value={draft.channel}
-              onChange={(v) => set('channel', v)}
-              options={[0, 1, 2, 3, 4, 5, 6, 7].map((c) => ({
-                value: c,
-                label: `Channel ${c + 1}${used.has(c) ? ' (in use)' : ''}`,
-                disabled: used.has(c),
-              }))}
-              hint="The sensor input and outlet this plant is wired to."
+              label="Plant node"
+              value={draft.node ?? ''}
+              onChange={(v) => set('node', v || null)}
+              options={[
+                ...nodeOptions.map((n) => ({
+                  value: n,
+                  label: n === existing?.node ? `${n} (this plant's)` : `${n} (waiting to be added)`,
+                })),
+                { value: '', label: 'None: nothing waters this plant' },
+              ]}
+              hint={
+                nodeOptions.length
+                  ? "The node in this plant's pot. It pairs at its next check-in."
+                  : 'Put batteries in a node: it shows up here within a minute.'
+              }
             />
           </div>
           <Field
@@ -241,7 +251,7 @@ export function PlantEditor({ id }: { id?: string }) {
         </section>
 
         <section className="card form-section">
-          <h2>Pot and outlet</h2>
+          <h2>Pot, bottle and pump</h2>
           <div className="fields">
             <NumberField
               label="Pot volume"
@@ -257,44 +267,49 @@ export function PlantEditor({ id }: { id?: string }) {
                 }))
               }
             />
-            <SelectField
-              label="Outlet"
-              value={draft.outlet.type}
-              onChange={(v) => set('outlet', { ...draft.outlet, type: v })}
-              options={[
-                { value: 'pump', label: 'Pump' },
-                { value: 'valve', label: 'Gravity valve' },
-              ]}
-            />
             <NumberField
-              label="Flow rate"
-              value={draft.outlet.flowMlPerS}
+              label="Pump flow"
+              value={draft.pump.flowMlPerS}
               unit="ml/s"
               step={0.1}
               error={err('flow')}
               hint="Measure it on the plant page after saving."
-              onChange={(v) => set('outlet', { ...draft.outlet, flowMlPerS: v })}
+              onChange={(v) => set('pump', { ...draft.pump, flowMlPerS: v })}
             />
-            {draft.outlet.type === 'valve' && (
-              <>
-                <NumberField
-                  label="Drop below reservoir"
-                  value={draft.outlet.dropMm}
-                  unit="mm"
-                  step={10}
-                  hint="From the bottle cap down to the drip outlet."
-                  onChange={(v) => set('outlet', { ...draft.outlet, dropMm: v })}
-                />
-                <NumberField
-                  label="Reservoir fill when measured"
-                  value={draft.outlet.calFillPct}
-                  unit="%"
-                  hint="Flow is corrected as the water level drops."
-                  onChange={(v) => set('outlet', { ...draft.outlet, calFillPct: v })}
-                />
-              </>
-            )}
           </div>
+          <div className="fields">
+            <NumberField
+              label="Bottle holds"
+              value={draft.bottle.capacityMl}
+              unit="ml"
+              step={50}
+              error={err('capacityMl')}
+              hint="What you pour in to refill it from empty."
+              onChange={(v) => set('bottle', { ...draft.bottle, capacityMl: v })}
+            />
+            <NumberField
+              label="Refill reminder below"
+              value={draft.bottle.lowPct}
+              unit="%"
+              error={err('lowPct')}
+              onChange={(v) => set('bottle', { ...draft.bottle, lowPct: v })}
+            />
+            <NumberField
+              label="Keep in reserve"
+              value={draft.bottle.reserveMl}
+              unit="ml"
+              step={10}
+              error={err('reserveMl')}
+              hint="Until the pump has learned its current, the gauge stops here so the pump never sucks air."
+              onChange={(v) => set('bottle', { ...draft.bottle, reserveMl: v })}
+            />
+          </div>
+          <Toggle
+            label="Feel the pump run dry"
+            checked={draft.pump.currentSense}
+            onChange={(v) => set('pump', { ...draft.pump, currentSense: v })}
+            hint="Needs the 1 Ω resistor in the pump wire. The node then notices an empty bottle, an unplugged or a jammed pump by the pump's current."
+          />
           <div className="fields">
             <NumberField
               label="Largest pulse"

@@ -164,11 +164,13 @@ function GeneralSettings({ initial }: { initial: SettingsT }) {
             hint="A plant that gets very dry is watered at any hour."
           />
           <NumberField
-            label="Check sensors every"
-            value={s.sampleIntervalS}
-            unit="s"
-            step={10}
-            onChange={(v) => up('sampleIntervalS', v)}
+            label="Nodes check in every"
+            value={s.checkInMin}
+            unit="min"
+            min={1}
+            max={60}
+            onChange={(v) => up('checkInMin', v)}
+            hint="How often each plant's node wakes, reads its soil and reports. Longer saves batteries; Water now waits for the next check-in."
           />
           <NumberField
             label="Save history every"
@@ -177,27 +179,6 @@ function GeneralSettings({ initial }: { initial: SettingsT }) {
             onChange={(v) => up('logIntervalMin', v)}
           />
         </div>
-        <Toggle
-          label="Buzzer for critical alerts"
-          checked={s.buzzerEnabled}
-          onChange={(v) => up('buzzerEnabled', v)}
-        />
-        {s.buzzerEnabled && (
-          <div className="fields">
-            <SelectField
-              label="Quiet from"
-              value={s.quietHours.startH}
-              options={HOURS}
-              onChange={(v) => up('quietHours', { ...s.quietHours, startH: v })}
-            />
-            <SelectField
-              label="Quiet until"
-              value={s.quietHours.endH}
-              options={HOURS}
-              onChange={(v) => up('quietHours', { ...s.quietHours, endH: v })}
-            />
-          </div>
-        )}
       </section>
 
       <section className="card form-section">
@@ -221,81 +202,16 @@ function GeneralSettings({ initial }: { initial: SettingsT }) {
             onChange={(v) => up('limits', { ...s.limits, hardMaxDailyMlPerPlant: v })}
           />
           <NumberField
-            label="Most for all plants per day"
-            value={s.limits.hardMaxDailyMlTotal}
-            unit="ml"
-            step={100}
-            onChange={(v) => up('limits', { ...s.limits, hardMaxDailyMlTotal: v })}
-          />
-          <NumberField
-            label="Longest a pump or valve stays open"
+            label="Longest a pump runs"
             value={s.limits.hardMaxOnTimeS}
             unit="s"
             onChange={(v) => up('limits', { ...s.limits, hardMaxOnTimeS: v })}
-            hint="A hardware timer enforces this independently of the software."
+            hint="A hardware timer on each node enforces this independently of its software."
           />
         </div>
-        <Toggle
-          label="Leak sensor connected"
-          checked={s.leakSensorEnabled}
-          onChange={(v) => up('leakSensorEnabled', v)}
-          hint="When it gets wet, all watering stops until you resume."
-        />
-      </section>
-
-      <section className="card form-section">
-        <h2>Reservoir</h2>
-        <div className="fields">
-          <NumberField
-            label="Capacity"
-            value={s.reservoir.capacityMl}
-            unit="ml"
-            step={100}
-            onChange={(v) => up('reservoir', { ...s.reservoir, capacityMl: v })}
-            hint="What the scale reads when the bottle is filled to its line."
-          />
-          <NumberField
-            label="Water depth when full"
-            value={s.reservoir.fullHeightMm}
-            unit="mm"
-            step={10}
-            onChange={(v) => up('reservoir', { ...s.reservoir, fullHeightMm: v })}
-            hint="From the bottle cap up to the water surface. Only needed for gravity valves."
-          />
-          <NumberField
-            label="Warn below"
-            value={s.reservoir.lowPct}
-            unit="%"
-            onChange={(v) => up('reservoir', { ...s.reservoir, lowPct: v })}
-          />
-          <NumberField
-            label="…or when it lasts less than"
-            value={s.reservoir.lowDaysLeft}
-            unit="days"
-            step={0.5}
-            onChange={(v) => up('reservoir', { ...s.reservoir, lowDaysLeft: v })}
-          />
-          <NumberField
-            label="Treat as empty below"
-            value={s.reservoir.emptyMl}
-            unit="ml"
-            step={50}
-            onChange={(v) => up('reservoir', { ...s.reservoir, emptyMl: v })}
-            hint="Stops before air gets into the tubing."
-          />
-        </div>
-        <div className="row">
-          <Toggle
-            label="Load cell scale"
-            checked={s.reservoir.scaleEnabled}
-            onChange={(v) => up('reservoir', { ...s.reservoir, scaleEnabled: v })}
-          />
-          <Toggle
-            label="Float switch"
-            checked={s.reservoir.floatSwitchEnabled}
-            onChange={(v) => up('reservoir', { ...s.reservoir, floatSwitchEnabled: v })}
-          />
-        </div>
+        <p className="small muted">
+          Each plant also has its own bottle: the most it can ever get is what is in it.
+        </p>
       </section>
 
       <section className="card form-section">

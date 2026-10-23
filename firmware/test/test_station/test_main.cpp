@@ -449,7 +449,22 @@ void test_status_matches_fixture() {
                                       "Snake plant: moisture sensor looks disconnected or shorted."));
   checkIn(snake, rig.radio());
 
-  JsonDocument out = rig.status();
+  JsonDocument out;
+  SystemInfo sys;
+  sys.version = "0.2.0";
+  sys.uptimeS = 86400;
+  sys.heapFree = 154320;
+  sys.resetReason = "power_on";
+  sys.wifiMode = "sta";
+  sys.ssid = "HomeWiFi";
+  sys.ip = "192.168.1.50";
+  sys.rssi = -58;
+  sys.apSsid = "PlantCare-1A2B";
+  sys.internet = true;
+  sys.sdOk = true;
+  sys.sdUsedMb = 12.5f;
+  sys.sdTotalMb = 29819.4f;
+  rig.station.statusToJson(sys, rig.now, out.to<JsonObject>());
   std::string actual;
   serializeJsonPretty(out, actual);
   JsonDocument fixture;

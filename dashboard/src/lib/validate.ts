@@ -11,7 +11,11 @@ export function validatePlant(p: PlantProfile): Errors {
   if (!p.name.trim()) e.name = 'Give the plant a name.';
   else if (p.name.length > 40) e.name = 'Keep the name under 40 characters.';
   if (!between(p.potVolumeMl, 50, 100000)) e.potVolumeMl = 'Between 50 ml and 100 L.';
-  if (!between(p.outlet.flowMlPerS, 0.05, 100)) e.flow = 'Between 0.05 and 100 ml/s.';
+  if (!between(p.pump.flowMlPerS, 0.05, 100)) e.flow = 'Between 0.05 and 100 ml/s.';
+  if (!between(p.bottle.capacityMl, 100, 20000)) e.capacityMl = 'Between 100 ml and 20 L.';
+  if (!between(p.bottle.lowPct, 0, 90)) e.lowPct = 'Between 0 and 90%.';
+  if (!(p.bottle.reserveMl >= 0 && p.bottle.reserveMl < p.bottle.capacityMl / 2))
+    e.reserveMl = 'Less than half the bottle.';
   const m = p.moisture;
   if (![m.critical, m.min, m.target, m.max].every((v) => between(v, 0, 100))) {
     e.moisture = 'Moisture values are percentages from 0 to 100.';

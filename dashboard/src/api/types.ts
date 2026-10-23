@@ -1,14 +1,26 @@
-// Mirrors the firmware's JSON (firmware/lib/plantcore/src/Json.cpp). The shapes are
-// checked against shared/api-fixtures by src/api/contract.test.ts.
+// Mirrors the main station's JSON (firmware/lib/plantcore/src/Json.cpp and
+// firmware/lib/plantlink/src/Station.cpp). The shapes are checked against
+// shared/api-fixtures by src/api/contract.test.ts.
 
 export type Severity = 'info' | 'warning' | 'critical';
-export type OutletType = 'pump' | 'valve';
 export type WateringStyle = 'evenly_moist' | 'dry_between' | 'soak_and_dry';
 export type SensorFaultPolicy = 'pause' | 'fallback_schedule';
-export type SensorHealth = 'ok' | 'suspect' | 'failed';
+// 'unknown': the plant's node has not reported since the main station started.
+export type SensorHealth = 'ok' | 'suspect' | 'failed' | 'unknown';
 export type SensorIssue =
-  'ok' | 'uncalibrated' | 'bus_error' | 'disconnected' | 'out_of_range' | 'no_response' | 'stuck' | 'erratic';
-export type PlannerState = 'idle' | 'waiting' | 'watering' | 'soaking';
+  | 'ok'
+  | 'uncalibrated'
+  | 'bus_error'
+  | 'disconnected'
+  | 'out_of_range'
+  | 'no_response'
+  | 'stuck'
+  | 'erratic'
+  | 'unknown';
+export type PlannerState = 'idle' | 'waiting' | 'watering' | 'soaking' | 'unknown';
+export type EmptyReason = 'none' | 'gauge' | 'pump_dry' | 'no_response';
+export type PumpVerdict = 'ok' | 'dry' | 'disconnected' | 'jammed';
+export type CommandKind = 'water' | 'timed_run' | 'refilled' | 'clear_faults' | 'identify' | 'forget';
 export type SessionKind = 'auto' | 'manual' | 'fallback';
 export type EventType = 'watering' | 'alert' | 'alert_cleared' | 'refill' | 'system';
 
@@ -30,8 +42,10 @@ export interface PlantProfile {
   species: string;
   enabled: boolean;
   autoWater: boolean;
-  channel: number;
-  outlet: { type: OutletType; flowMlPerS: number; calFillPct: number; dropMm: number };
+  // The plant node watering this plant (12 hex digits of its radio address).
+  node: string | null;
+  pump: { flowMlPerS: number; currentSense: boolean };
+  bottle: { capacityMl: number; lowPct: number; reserveMl: number };
   potVolumeMl: number;
   soil: string;
   moisture: MoistureBand;
@@ -58,26 +72,13 @@ export interface Settings {
   tzName: string;
   southernHemisphere: boolean;
   waterWindow: { startH: number; endH: number };
-  quietHours: { startH: number; endH: number };
-  sampleIntervalS: number;
+  checkInMin: number;
   logIntervalMin: number;
   automationEnabled: boolean;
-  buzzerEnabled: boolean;
-  leakSensorEnabled: boolean;
   limits: {
     hardMaxPulseMl: number;
     hardMaxDailyMlPerPlant: number;
-    hardMaxDailyMlTotal: number;
     hardMaxOnTimeS: number;
-  };
-  reservoir: {
-    scaleEnabled: boolean;
-    floatSwitchEnabled: boolean;
-    capacityMl: number;
-    fullHeightMm: number;
-    lowPct: number;
-    emptyMl: number;
-    lowDaysLeft: number;
   };
   notify: {
     enabled: boolean;
@@ -93,12 +94,35 @@ export type SettingsPatch = DeepPartial<Omit<Settings, 'notify'>> & {
   notify?: Partial<Omit<Settings['notify'], 'tokenSet'>> & { token?: string };
 };
 
+export interface QueuedCommand {
+  id: number;
+  kind: CommandKind;
+  arg: number;
+}
+
+export interface BottleStatus {
+  ml: number;
+  pct: number;
+  capacityMl: number;
+  daysLeft: number | null;
+  low: boolean;
+  empty: boolean;
+  emptyReason: EmptyReason;
+  flowFactor: number; // learned correction of the pump's flow (1 = as measured)
+}
+
 export interface PlantStatus {
   id: string;
   name: string;
-  channel: number;
+  node: string | null;
+  online: boolean;
+  lastSeenAt: number | null;
+  nextCheckInS: number | null;
+  firmware: string | null;
+  battery: { mv: number; pct: number; low: boolean } | null;
+  linkPct: number | null;
   moisturePct: number | null;
-  raw: number;
+  raw: number | null;
   sensor: SensorHealth;
   issue: SensorIssue;
   state: PlannerState;
@@ -109,6 +133,21 @@ export interface PlantStatus {
   lockedOut: boolean;
   mlPerPct: number | null;
   soakRemainingS: number;
+  bottle: BottleStatus | null;
+  pump: { learned: boolean; lastRun: PumpVerdict };
+  dosing: { ml: number; dispensedMl: number } | null;
+  queued: QueuedCommand[];
+  configPending: boolean;
+  repairRequested: boolean;
+  buttonPressed: boolean;
+}
+
+// A node that said hello and is waiting to be added as a plant.
+export interface NewNode {
+  id: string;
+  board: string;
+  firmware: string;
+  lastSeenAt: number | null;
 }
 
 export interface Status {
@@ -133,19 +172,6 @@ export interface Status {
   };
   storage: { sdOk: boolean; sdUsedMb: number; sdTotalMb: number };
   automation: { enabled: boolean; emergencyStop: boolean };
-  leak: boolean;
-  reservoir: {
-    scaleValid: boolean;
-    ml: number | null;
-    pct: number | null;
-    capacityMl: number;
-    daysLeft: number | null;
-    low: boolean;
-    empty: boolean;
-    floatLow: boolean;
-    scaleCalibrated: boolean;
-    scaleRaw: number;
-  };
   environment: {
     valid: boolean;
     tempC: number | null;
@@ -153,25 +179,24 @@ export interface Status {
     vpdKPa: number | null;
     lux: number | null;
   };
-  dose: { plantId: string; channel: number; kind: SessionKind; ml: number; dispensedMl: number } | null;
-  lastDose: {
-    plantId: string;
-    channel: number;
-    ml: number;
-    onTimeMs: number;
-    closedLoop: boolean;
-    at: number;
-  } | null;
-  mlTodayTotal: number;
   plants: PlantStatus[];
+  newNodes: NewNode[];
+  radio: { channel: number; checkInMin: number; online: number; total: number };
+  mlTodayTotal: number;
   alerts: { critical: number; warning: number; info: number };
+}
+
+// What a plant command returns: it runs when the node next checks in.
+export interface Queued {
+  queued: true;
+  id: number;
+  etaS: number | null;
 }
 
 export interface Alert {
   id: number;
   code: string;
   severity: Severity;
-  channel: number | null;
   plantId: string | null;
   active: boolean;
   acked: boolean;
@@ -189,18 +214,19 @@ export interface DeviceEvent {
   detail: string;
 }
 
+// [ts, moisturePct, bottleMl]
 export interface History {
   plantId: string;
   from: number;
   to: number;
-  points: [number, number | null][];
+  points: [number, number | null, number | null][];
 }
 
-// [ts, tempC, humidityPct, lux, reservoirMl]
+// [ts, tempC, humidityPct, lux]
 export interface EnvHistory {
   from: number;
   to: number;
-  points: [number, number | null, number | null, number | null, number | null][];
+  points: [number, number | null, number | null, number | null][];
 }
 
 export interface Info {

@@ -30,6 +30,13 @@ export function formatDuration(seconds: number): string {
   return `${Math.round(h / 24)} days`;
 }
 
+// When a queued command runs: "at the next check-in (in about 3 min)".
+export function formatEta(etaS: number | null | undefined): string {
+  if (etaS === null || etaS === undefined) return 'when the node next checks in';
+  if (etaS < 20) return 'within moments';
+  return `at the next check-in, in about ${formatDuration(etaS)}`;
+}
+
 // "3 h ago", "just now", "in 2 days" relative to `now` (unix seconds).
 export function formatAgo(ts: number | null | undefined, now: number): string {
   if (!ts) return 'never';

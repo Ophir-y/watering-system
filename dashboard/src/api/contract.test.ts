@@ -34,17 +34,14 @@ function expectSameShape(fixture: unknown, sample: unknown) {
   }
 }
 
+// A plant pouring, a command waiting for its node, a plant without a node and a
+// node waiting to be added: every part of the status document is present.
 function busyDevice() {
   const d = new MockDevice({ autoTick: false });
-  d.dose = { plantId: d.plants[0].id, ml: 60, dispensed: 22.5, kind: 'auto' };
-  d.lastDose = {
-    plantId: d.plants[0].id,
-    channel: 0,
-    ml: 98.2,
-    onTimeMs: 54500,
-    closedLoop: true,
-    at: 1767258000,
-  };
+  const lv = d.live.get(d.plants[0].id)!;
+  lv.dose = { ml: 60, dispensed: 22.5, kind: 'auto' };
+  lv.queue.push({ id: 1, kind: 'water', arg: 80 });
+  d.plants.push({ ...d.plants[1], id: 'pothos', name: 'Pothos', node: null });
   return d;
 }
 
@@ -73,7 +70,11 @@ describe('API contract (shared/api-fixtures)', () => {
   it('events', () => {
     const d = new MockDevice({ autoTick: false });
     const sample: { events: DeviceEvent[] } = {
-      events: [d.events.find((e) => e.plantId)!, { ...d.events.find((e) => e.type === 'refill')! }],
+      events: [
+        d.events.find((e) => e.plantId)!,
+        { ...d.events.find((e) => e.type === 'refill')! },
+        { ...d.events.find((e) => e.plantId)!, plantId: null },
+      ],
     };
     expectSameShape(eventsFixture, sample);
   });
@@ -84,15 +85,25 @@ describe('API contract (shared/api-fixtures)', () => {
     const h: History = d.history(d.plants[0].id, now - 86400, now, 50);
     expectSameShape(historyFixture, h);
     const e: EnvHistory = d.envHistory(now - 86400, now, 50);
-    e.points[1] = [e.points[1][0], e.points[1][1], null, null, e.points[1][4]];
+    e.points[1] = [e.points[1][0], e.points[1][1], null, null];
     expectSameShape(envFixture, e);
   });
 
   it('every enum value in the fixtures is known to the types', () => {
     const s = statusFixture as unknown as Status;
-    const sensors: Status['plants'][number]['sensor'][] = ['ok', 'suspect', 'failed'];
-    for (const p of s.plants) expect(sensors).toContain(p.sensor);
+    const sensors: Status['plants'][number]['sensor'][] = ['ok', 'suspect', 'failed', 'unknown'];
+    const states: Status['plants'][number]['state'][] = ['idle', 'waiting', 'watering', 'soaking', 'unknown'];
+    const reasons: string[] = ['none', 'gauge', 'pump_dry', 'no_response'];
+    const runs: string[] = ['ok', 'dry', 'disconnected', 'jammed'];
+    for (const p of s.plants) {
+      expect(sensors).toContain(p.sensor);
+      expect(states).toContain(p.state);
+      if (p.bottle) expect(reasons).toContain(p.bottle.emptyReason);
+      expect(runs).toContain(p.pump.lastRun);
+      for (const c of p.queued)
+        expect(['water', 'timed_run', 'refilled', 'clear_faults', 'identify', 'forget']).toContain(c.kind);
+    }
     expect(['sta', 'ap', 'sta+ap', 'off']).toContain(s.network.mode);
-    expect(['pump', 'valve']).toContain((plantFixture as PlantProfile).outlet.type);
+    expect((plantFixture as PlantProfile).node).toMatch(/^[0-9a-f]{12}$/);
   });
 });

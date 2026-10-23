@@ -28,6 +28,47 @@ describe('mock device', () => {
     expect(lv.moisture).toBeGreaterThan(p.moisture.target - 3);
   });
 
+  it('queues Water now for the next check-in and pours it then', async () => {
+    const d = new MockDevice({ autoTick: false });
+    const p = d.plants[0];
+    const lv = d.live.get(p.id)!;
+    const r = await d.request('POST', `/api/plants/${p.id}/water`, { ml: 80 }, TOKEN);
+    expect(r.status).toBe(202);
+    expect((r.body as { queued: boolean }).queued).toBe(true);
+    expect(d.status().plants[0].queued).toHaveLength(1);
+    const before = lv.bottleMl;
+    for (let i = 0; i < 20 && d.status().plants[0].queued.length; i++) d.tick(1000);
+    expect(d.status().plants[0].queued).toHaveLength(0);
+    for (let i = 0; i < 60 && lv.dose; i++) d.tick(1000);
+    expect(before - lv.bottleMl).toBeCloseTo(80, 0);
+  });
+
+  it('adds a waiting node as a plant', async () => {
+    const d = new MockDevice({ autoTick: false });
+    const node = d.status().newNodes[0].id;
+    const r = await d.request('POST', '/api/plants', { name: 'Calathea', node }, TOKEN);
+    expect(r.status).toBe(201);
+    const s = d.status();
+    expect(s.newNodes).toHaveLength(0);
+    expect(s.plants.find((p) => p.node === node)?.configPending).toBe(true);
+    const dup = await d.request('POST', '/api/plants', { name: 'Again', node }, TOKEN);
+    expect(dup.status).toBe(400);
+  });
+
+  it('marks the bottle empty when the pump runs dry, until refilled', () => {
+    const d = new MockDevice({ autoTick: false });
+    const p = d.plants[1];
+    const lv = d.live.get(p.id)!;
+    lv.bottleMl = 80;
+    lv.moisture = p.moisture.min - 5;
+    for (let i = 0; i < 200 && !lv.bottleEmpty; i++) d.tick(1000);
+    expect(d.status().plants[1].bottle?.empty).toBe(true);
+    expect(d.status().plants[1].bottle?.emptyReason).toBe('pump_dry');
+    d.pressButton(p.id);
+    expect(d.status().plants[1].bottle?.empty).toBe(false);
+    expect(d.status().plants[1].buttonPressed).toBe(true);
+  });
+
   it('refuses manual watering while stopped', async () => {
     const d = new MockDevice({ autoTick: false });
     await d.request('POST', '/api/system/stop', {}, TOKEN);

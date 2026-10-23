@@ -11,7 +11,7 @@ const NAV: { href: string; label: string; short: string; icon: IconName }[] = [
   { href: '/', label: 'Plants', short: 'Plants', icon: 'sprout' },
   { href: '/activity', label: 'Activity', short: 'Activity', icon: 'list' },
   { href: '/alerts', label: 'Alerts', short: 'Alerts', icon: 'bell' },
-  { href: '/climate', label: 'Room & reservoir', short: 'Room', icon: 'thermometer' },
+  { href: '/climate', label: 'Room', short: 'Room', icon: 'thermometer' },
   { href: '/settings', label: 'Settings', short: 'Settings', icon: 'sliders' },
 ];
 
@@ -44,10 +44,7 @@ export function StopControl({ compact }: { compact?: boolean }) {
         </button>
         <Dialog open={confirm} onClose={() => setConfirm(false)} labelledBy="resume-title">
           <h2 id="resume-title">Resume watering?</h2>
-          <p className="ink-2">
-            Automatic watering picks up where it left off. If it stopped because of a leak or a stuck valve,
-            fix that first.
-          </p>
+          <p className="ink-2">Every plant node picks up where it left off at its next check-in.</p>
           <div className="row">
             <button className="btn btn-ghost" onClick={() => setConfirm(false)}>
               Keep stopped
@@ -69,7 +66,9 @@ export function StopControl({ compact }: { compact?: boolean }) {
   return (
     <button
       className={`btn btn-stop${compact ? ' btn-small' : ''}`}
-      onClick={() => act(() => api.stopAll('stopped from the dashboard'), 'All watering stopped')}
+      onClick={() =>
+        act(() => api.stopAll('stopped from the dashboard'), 'Stopping: each node stops at its next check-in')
+      }
       title="Closes every pump and valve immediately and pauses automatic watering"
     >
       <Icon name="stop" size={16} /> Stop all

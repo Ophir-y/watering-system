@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 import { api } from '../api/client';
 import type { PlantProfile } from '../api/types';
+import { formatEta } from '../lib/format';
 import { useDevice } from '../state/device';
 import { useToast } from '../state/toast';
 import { Dialog } from './Dialog';
@@ -25,8 +26,8 @@ export function WaterDialog({
   const water = async () => {
     setBusy(true);
     try {
-      await api.water(plant.id, ml);
-      toast.show(`Watering ${plant.name}: ${ml} ml`);
+      const q = await api.water(plant.id, ml);
+      toast.show(`${plant.name}: ${ml} ml queued, poured ${formatEta(q.etaS)}`);
       onClose();
       await refresh();
     } catch (e) {
@@ -42,7 +43,8 @@ export function WaterDialog({
         Water <span className="tag-name">{plant.name}</span> now
       </h2>
       <p className="ink-2 small">
-        Ignores the schedule but still respects the safety limits. Counts towards today&apos;s total.
+        Ignores the schedule but still respects the safety limits. Counts towards today&apos;s total. The
+        plant&apos;s node pours it when it next checks in.
       </p>
       <div className="stack" style={{ marginTop: 14 }}>
         <div className="presets">

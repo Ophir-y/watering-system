@@ -31,7 +31,7 @@ export interface RecommendationInput {
   watering?: WateringStats | null;
   month: number; // 1..12, local
   southernHemisphere: boolean;
-  reservoirDaysLeft?: number | null;
+  bottleDaysLeft?: number | null;
 }
 
 const median = (xs: number[]) => {
@@ -184,16 +184,12 @@ export function recommendations(input: RecommendationInput): Recommendation[] {
     });
   }
 
-  if (
-    input.reservoirDaysLeft !== null &&
-    input.reservoirDaysLeft !== undefined &&
-    input.reservoirDaysLeft < 3
-  ) {
+  if (input.bottleDaysLeft !== null && input.bottleDaysLeft !== undefined && input.bottleDaysLeft < 3) {
     out.push({
       id: 'refill',
       level: 'attention',
-      title: 'Refill the reservoir soon',
-      body: `At the current rate it runs out in about ${input.reservoirDaysLeft.toFixed(1)} days.`,
+      title: 'Refill the bottle soon',
+      body: `At the current rate it runs out in about ${input.bottleDaysLeft.toFixed(1)} days.`,
     });
   }
 

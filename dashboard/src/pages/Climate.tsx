@@ -1,31 +1,24 @@
 import { useMemo, useState } from 'react';
 
 import { api } from '../api/client';
-import { NumberField } from '../components/Fields';
-import { ReservoirTank } from '../components/ReservoirTank';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
-import { formatLux, formatMl, formatPct } from '../lib/format';
+import { formatLux, formatPct, formatTemp } from '../lib/format';
 import { useAsync, useNow } from '../lib/hooks';
-import { useDevice, useStatus } from '../state/device';
-import { useToast } from '../state/toast';
+import { useStatus } from '../state/device';
 
 const RANGES = { '24 h': 86400, '7 days': 7 * 86400, '30 days': 30 * 86400 } as const;
 type RangeKey = keyof typeof RANGES;
 
-// Room climate and the reservoir: small multiples, one measure per chart.
+// Room climate from the main station's sensors: small multiples, one measure per chart.
+// The nodes use it to water sooner when the air is hot and dry.
 export function Climate() {
   const status = useStatus();
-  const { settings, refresh } = useDevice();
-  const toast = useToast();
   const realNow = useNow(60000);
   const now = status.device.now ?? realNow;
   const [range, setRange] = useState<RangeKey>('24 h');
   const span = RANGES[range];
   const hist = useAsync(() => api.envHistory(now - span, now, 240), `${range}-${Math.floor(now / 300)}`);
-  const [refillMl, setRefillMl] = useState(NaN);
-  const [knownMl, setKnownMl] = useState(1000);
-  const [step, setStep] = useState<'idle' | 'tared'>('idle');
-  const res = status.reservoir;
+  const env = status.environment;
 
   const cols = useMemo(() => {
     const pts = hist.data?.points ?? [];
@@ -34,27 +27,20 @@ export function Climate() {
       temp: pts.map((p) => p[1]),
       rh: pts.map((p) => p[2]),
       lux: pts.map((p) => p[3]),
-      res: pts.map((p) => p[4]),
     };
   }, [hist.data]);
-
-  const act = async (fn: () => Promise<unknown>, msg: string, after?: () => void) => {
-    try {
-      await fn();
-      toast.show(msg);
-      after?.();
-      await refresh();
-    } catch (e) {
-      toast.error(e);
-    }
-  };
 
   return (
     <div className="page">
       <div className="page-head">
         <div>
-          <h1>Room and reservoir</h1>
-          <p>What the climate sensors and the reservoir scale recorded.</p>
+          <h1>Room</h1>
+          <p>
+            What the main station's climate sensors recorded.{' '}
+            {env.valid
+              ? `Now ${formatTemp(env.tempC)}, ${formatPct(env.humidityPct)} humidity.`
+              : 'No climate sensor is connected.'}
+          </p>
         </div>
         <div className="segmented" role="group" aria-label="Time range">
           {(Object.keys(RANGES) as RangeKey[]).map((r) => (
@@ -66,24 +52,6 @@ export function Climate() {
       </div>
 
       <div className="two-col">
-        <section className="card">
-          <div className="card-head">
-            <h2>Reservoir</h2>
-            <span className="ink-2">
-              {res.ml === null ? 'Scale not available' : `${formatMl(res.ml)} · ${formatPct(res.pct)}`}
-            </span>
-          </div>
-          <TimeSeriesChart
-            times={cols.t}
-            values={cols.res}
-            label="Reservoir"
-            format={(v) => formatMl(v)}
-            yRange={[0, res.capacityMl]}
-            height={180}
-            loading={hist.loading}
-            emptyText="No reservoir readings yet. Calibrate the scale below."
-          />
-        </section>
         <section className="card">
           <div className="card-head">
             <h2>Temperature</h2>
@@ -124,93 +92,13 @@ export function Climate() {
             loading={hist.loading}
           />
         </section>
-      </div>
-
-      <div className="two-col">
-        <section className="card form-section">
-          <h2>Record a refill</h2>
-          <p>
-            The scale notices refills by itself. Without a scale, note them here so the activity log stays
-            complete.
+        <section className="card">
+          <h2>Why it matters</h2>
+          <p className="ink-2">
+            Warm, dry air pulls water out of soil and leaves faster. When the drying power (VPD) is high, each
+            node starts watering its plant a little sooner; below a plant&apos;s minimum temperature its doses
+            are halved. The sensors measure one spot, so keep the main station near the plants.
           </p>
-          <div className="row" style={{ alignItems: 'flex-end' }}>
-            <div style={{ width: 180 }}>
-              <NumberField label="Water added" value={refillMl} onChange={setRefillMl} unit="ml" step={100} />
-            </div>
-            <button
-              className="btn"
-              disabled={!(refillMl > 0)}
-              onClick={() =>
-                act(
-                  () => api.refilled(refillMl),
-                  'Refill recorded',
-                  () => setRefillMl(NaN),
-                )
-              }
-            >
-              Record refill
-            </button>
-          </div>
-        </section>
-
-        <section className="card form-section">
-          <h2>Calibrate the scale</h2>
-          <div className="tank-row">
-            <ReservoirTank
-              pct={res.pct}
-              lowPct={settings?.reservoir.lowPct ?? 20}
-              empty={res.empty}
-              width={48}
-              height={72}
-            />
-            <p className="small ink-2">
-              {res.scaleCalibrated ? 'The scale is calibrated.' : 'The scale is not calibrated yet.'} Raw
-              reading <span className="num">{res.scaleRaw}</span>.
-            </p>
-          </div>
-          {step === 'idle' ? (
-            <>
-              <p>1. Put the empty reservoir on the scale, then tare.</p>
-              <button
-                className="btn"
-                style={{ width: 'max-content' }}
-                onClick={() => act(api.tareScale, 'Empty weight saved', () => setStep('tared'))}
-              >
-                Tare empty reservoir
-              </button>
-            </>
-          ) : (
-            <>
-              <p>2. Pour in a measured amount of water, wait a few seconds, then save.</p>
-              <div className="row" style={{ alignItems: 'flex-end' }}>
-                <div style={{ width: 180 }}>
-                  <NumberField
-                    label="Water poured in"
-                    value={knownMl}
-                    onChange={setKnownMl}
-                    unit="ml"
-                    step={100}
-                  />
-                </div>
-                <button
-                  className="btn btn-water"
-                  disabled={!(knownMl >= 100)}
-                  onClick={() =>
-                    act(
-                      () => api.calibrateScale(knownMl),
-                      'Scale calibrated',
-                      () => setStep('idle'),
-                    )
-                  }
-                >
-                  Save calibration
-                </button>
-                <button className="btn btn-ghost" onClick={() => setStep('idle')}>
-                  Start over
-                </button>
-              </div>
-            </>
-          )}
         </section>
       </div>
     </div>

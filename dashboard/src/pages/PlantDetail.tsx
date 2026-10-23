@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react';
 import { Link } from 'wouter';
 
 import { api } from '../api/client';
-import type { PlantProfile, PlantStatus, Status } from '../api/types';
+import type { PlantProfile, PlantStatus, QueuedCommand, Status } from '../api/types';
+import { BottleGauge } from '../components/BottleGauge';
 import { ConditionChip } from '../components/ConditionChip';
 import { NumberField } from '../components/Fields';
 import { Icon } from '../components/Icon';
@@ -10,8 +11,17 @@ import { SoilGauge } from '../components/SoilGauge';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
 import { WaterDialog } from '../components/WaterDialog';
 import { STYLE_LABEL, findSpecies } from '../data/species';
-import { ISSUE_TEXT, plantCondition } from '../lib/condition';
-import { formatAgo, formatDateTime, formatLux, formatMl, formatMonths, formatPct } from '../lib/format';
+import { EMPTY_REASON_TEXT, ISSUE_TEXT, PUMP_TEXT, plantCondition } from '../lib/condition';
+import {
+  formatAgo,
+  formatDateTime,
+  formatDuration,
+  formatEta,
+  formatLux,
+  formatMl,
+  formatMonths,
+  formatPct,
+} from '../lib/format';
 import { useAsync, useNow } from '../lib/hooks';
 import { envStats, recommendations, wateringStats } from '../lib/recommendations';
 import { useDevice, useStatus } from '../state/device';
@@ -24,7 +34,7 @@ const HOW: Record<string, string> = {
   auto: 'Automatic',
   manual: 'By hand',
   fallback: 'Fallback schedule',
-  timed: 'Outlet test',
+  timed: 'Flow test',
   detected: 'Watered outside the system',
   interrupted: 'Interrupted',
 };
@@ -73,6 +83,7 @@ function PlantView({ profile, ps, status }: { profile: PlantProfile; ps: PlantSt
   const condition = plantCondition(ps, profile);
   const times = useMemo(() => (history.data?.points ?? []).map((p) => p[0]), [history.data]);
   const values = useMemo(() => (history.data?.points ?? []).map((p) => p[1]), [history.data]);
+  const bottleValues = useMemo(() => (history.data?.points ?? []).map((p) => p[2]), [history.data]);
   const waterings = (events.data?.events ?? []).filter((e) => e.type === 'watering' && e.ml > 0);
   const markers = useMemo(() => waterings.map((e) => e.ts), [waterings]);
 
@@ -83,9 +94,10 @@ function PlantView({ profile, ps, status }: { profile: PlantProfile; ps: PlantSt
     watering: events.data ? wateringStats(events.data.events, profile.id, now - 7 * 86400, now) : null,
     month: new Date(now * 1000).getMonth() + 1,
     southernHemisphere: settings?.southernHemisphere ?? false,
-    reservoirDaysLeft: status.reservoir.daysLeft,
+    bottleDaysLeft: ps.bottle?.daysLeft ?? null,
   });
-  const dosing = status.dose?.plantId === profile.id ? status.dose : null;
+  const dosing = ps.dosing;
+  const canWater = !!profile.node && !status.automation.emergencyStop;
 
   return (
     <div className="page">
@@ -104,7 +116,8 @@ function PlantView({ profile, ps, status }: { profile: PlantProfile; ps: PlantSt
         <div style={{ minWidth: 0 }}>
           <h1 className="name tag-name">{profile.name}</h1>
           <p className="muted" style={{ fontStyle: 'italic', marginTop: 4 }}>
-            {species ? species.latin : 'Custom plant'} · channel {profile.channel + 1} · {profile.outlet.type}
+            {species ? species.latin : 'Custom plant'}
+            {profile.node ? ` · node ${profile.node}` : ' · no node'}
           </p>
           <div className="facts">
             <span>
@@ -120,6 +133,11 @@ function PlantView({ profile, ps, status }: { profile: PlantProfile; ps: PlantSt
               {formatMl(ps.mlToday)} of {formatMl(profile.maxDailyMl)} today
             </span>
             <span>watered {formatAgo(ps.lastWateredAt, now)}</span>
+            {ps.bottle && (
+              <span>
+                bottle <strong>{ps.bottle.empty ? 'empty' : formatMl(ps.bottle.ml)}</strong>
+              </span>
+            )}
           </div>
           <div style={{ marginTop: 12 }}>
             <ConditionChip condition={condition} />
@@ -136,7 +154,7 @@ function PlantView({ profile, ps, status }: { profile: PlantProfile; ps: PlantSt
           </div>
         </div>
         <div className="actions row">
-          <button className="btn btn-water" onClick={() => setWatering(true)} disabled={!!status.dose}>
+          <button className="btn btn-water" onClick={() => setWatering(true)} disabled={!canWater}>
             <Icon name="drop" size={16} /> Water now
           </button>
           <Link href={`/plants/${encodeURIComponent(profile.id)}/edit`} className="btn">
@@ -144,6 +162,8 @@ function PlantView({ profile, ps, status }: { profile: PlantProfile; ps: PlantSt
           </Link>
         </div>
       </section>
+
+      <QueuedNotice queued={ps.queued} etaS={ps.nextCheckInS} />
 
       <section className="card">
         <div className="card-head">
@@ -261,34 +281,55 @@ function PlantView({ profile, ps, status }: { profile: PlantProfile; ps: PlantSt
         )}
       </section>
 
-      <SensorAndOutlet profile={profile} ps={ps} status={status} />
+      {profile.node && (
+        <BottleAndPump
+          profile={profile}
+          ps={ps}
+          times={times}
+          bottle={bottleValues}
+          loading={history.loading}
+        />
+      )}
+      <SensorAndNode profile={profile} ps={ps} now={now} />
       <WaterDialog plant={profile} open={watering} onClose={() => setWatering(false)} />
     </div>
   );
 }
 
-function SensorAndOutlet({
-  profile,
-  ps,
-  status,
-}: {
-  profile: PlantProfile;
-  ps: PlantStatus;
-  status: Status;
-}) {
+const COMMAND_TEXT: Record<string, (arg: number) => string> = {
+  water: (ml) => `Water ${Math.round(ml)} ml`,
+  timed_run: (s) => `Run the pump ${s} s`,
+  refilled: () => 'Bottle refilled',
+  clear_faults: () => 'Clear faults',
+  identify: () => 'Blink the LED',
+  forget: () => 'Unpair the node',
+};
+
+function QueuedNotice({ queued, etaS }: { queued: QueuedCommand[]; etaS: number | null }) {
+  if (!queued.length) return null;
+  return (
+    <div className="notice" data-tone="info">
+      <Icon name="clock" size={18} />
+      <div className="grow">
+        <p>
+          <strong>Waiting for the node:</strong>{' '}
+          {queued.map((c) => (COMMAND_TEXT[c.kind] ?? (() => c.kind))(c.arg)).join(', ')}
+        </p>
+        <p className="muted small">Carried out {formatEta(etaS)}.</p>
+      </div>
+    </div>
+  );
+}
+
+function useRun() {
   const { refresh, reloadPlants } = useDevice();
   const toast = useToast();
-  const [measured, setMeasured] = useState(NaN);
   const [busy, setBusy] = useState(false);
-  const testSeconds = 10;
-  const last = status.lastDose?.plantId === profile.id ? status.lastDose : null;
-  const measuredFlow = last?.closedLoop && last.onTimeMs > 1000 ? last.ml / (last.onTimeMs / 1000) : null;
-
-  const run = async (fn: () => Promise<unknown>, done: string) => {
+  const run = async (fn: () => Promise<unknown>, done: string | ((r: unknown) => string)) => {
     setBusy(true);
     try {
-      await fn();
-      toast.show(done);
+      const r = await fn();
+      toast.show(typeof done === 'string' ? done : done(r));
       await Promise.all([refresh(), reloadPlants()]);
     } catch (e) {
       toast.error(e);
@@ -296,98 +337,124 @@ function SensorAndOutlet({
       setBusy(false);
     }
   };
+  return { busy, run };
+}
+
+const queuedText = (what: string) => (r: unknown) =>
+  `${what} ${formatEta((r as { etaS: number | null }).etaS)}`;
+
+function BottleAndPump({
+  profile,
+  ps,
+  times,
+  bottle,
+  loading,
+}: {
+  profile: PlantProfile;
+  ps: PlantStatus;
+  times: number[];
+  bottle: (number | null)[];
+  loading: boolean;
+}) {
+  const { busy, run } = useRun();
+  const [measured, setMeasured] = useState(NaN);
+  const testSeconds = 10;
+  const b = ps.bottle;
   const saveFlow = (flow: number) =>
     run(
       () =>
-        api.updatePlant(profile.id, {
-          outlet: { ...profile.outlet, flowMlPerS: Math.round(flow * 100) / 100 },
-        }),
+        api.updatePlant(profile.id, { pump: { ...profile.pump, flowMlPerS: Math.round(flow * 100) / 100 } }),
       `Flow set to ${flow.toFixed(2)} ml/s`,
     );
 
   return (
     <section className="card">
-      <h2>Sensor and outlet</h2>
+      <h2>Bottle and pump</h2>
       <div className="two-col">
         <div className="stack">
-          <h3>Moisture sensor</h3>
-          <dl className="profile-list">
-            <dt>Status</dt>
-            <dd>{ISSUE_TEXT[ps.issue] ?? ps.issue}</dd>
-            <dt>Raw reading</dt>
-            <dd className="num">{ps.raw}</dd>
-            <dt>Calibration</dt>
-            <dd className="num">
-              dry {profile.calibration.rawDry} · wet {profile.calibration.rawWet}
-            </dd>
-            <dt>Learned</dt>
-            <dd>
-              {ps.mlPerPct
-                ? `${ps.mlPerPct.toFixed(1)} ml raises moisture by 1%`
-                : 'Not yet: needs a few waterings'}
-            </dd>
-          </dl>
+          <div className="tank-row">
+            <BottleGauge pct={b?.pct ?? null} lowPct={profile.bottle.lowPct} empty={!!b?.empty} />
+            <div className="tank-figure">
+              <strong>{b ? (b.empty ? 'Empty' : formatMl(b.ml)) : '–'}</strong>
+              <span className="ink-2">
+                {b ? `about ${formatPct(b.pct)} of ${formatMl(b.capacityMl)}` : 'No report yet'}
+              </span>
+              <p className="small muted" style={{ marginTop: 4 }}>
+                {b?.empty
+                  ? `Empty: ${EMPTY_REASON_TEXT[b.emptyReason] ?? b.emptyReason}.`
+                  : b?.daysLeft !== null && b?.daysLeft !== undefined
+                    ? `About ${b.daysLeft.toFixed(1)} days left`
+                    : 'Learning daily use'}
+              </p>
+            </div>
+          </div>
           <p className="small ink-2">
-            To calibrate, hold the sensor in the air (or bone-dry soil) and choose <em>Set dry point</em>.
-            Then stand it in a glass of water up to its line and choose <em>Set wet point</em>.
+            There is no level sensor: the node counts what it pumps, and corrects itself each time the bottle
+            runs dry. After refilling, press the button on the node, or here:
           </p>
           <div className="row">
             <button
-              className="btn btn-small"
+              className="btn btn-small btn-water"
               disabled={busy}
-              onClick={() => run(() => api.calibrate(profile.id, 'dry'), 'Dry point saved')}
+              onClick={() => run(() => api.refilled(profile.id), queuedText('Refill noted, sent'))}
             >
-              Set dry point
+              <Icon name="refill" size={16} /> Refilled
             </button>
-            <button
-              className="btn btn-small"
-              disabled={busy}
-              onClick={() => run(() => api.calibrate(profile.id, 'wet'), 'Wet point saved')}
-            >
-              Set wet point
-            </button>
-            {(ps.lockedOut || ps.issue === 'no_response') && (
-              <button
-                className="btn btn-small btn-water"
-                disabled={busy}
-                onClick={() => run(() => api.clearFaults(profile.id), 'Faults cleared')}
-              >
-                Clear faults
-              </button>
-            )}
           </div>
+          <TimeSeriesChart
+            times={times}
+            values={bottle}
+            label="Bottle"
+            format={(v) => formatMl(v)}
+            yRange={[0, profile.bottle.capacityMl]}
+            height={140}
+            loading={loading}
+            emptyText="No bottle readings yet"
+          />
         </div>
 
         <div className="stack">
-          <h3>Outlet ({profile.outlet.type === 'pump' ? 'pump' : 'gravity valve'})</h3>
+          <h3>Pump</h3>
           <dl className="profile-list">
             <dt>Flow</dt>
-            <dd>{profile.outlet.flowMlPerS.toFixed(2)} ml/s</dd>
+            <dd>
+              {profile.pump.flowMlPerS.toFixed(2)} ml/s
+              {b && Math.abs(b.flowFactor - 1) >= 0.03 && (
+                <span className="muted">
+                  {' '}
+                  (really about {(profile.pump.flowMlPerS * b.flowFactor).toFixed(2)})
+                </span>
+              )}
+            </dd>
+            <dt>Last run</dt>
+            <dd>{PUMP_TEXT[ps.pump.lastRun] ?? ps.pump.lastRun}</dd>
+            <dt>Feels dry runs</dt>
+            <dd>
+              {!profile.pump.currentSense
+                ? 'Off (no current sensing)'
+                : ps.pump.learned
+                  ? 'Yes: it knows its normal current'
+                  : 'Learning: after a few waterings'}
+            </dd>
             <dt>Limits</dt>
             <dd>
               {formatMl(profile.maxPulseMl)} per pulse · {formatMl(profile.maxDailyMl)} a day
             </dd>
           </dl>
-          {measuredFlow !== null && (
-            <div className="notice" data-tone="info">
-              <div className="grow small">
-                The scale measured {formatMl(last!.ml)} in {(last!.onTimeMs / 1000).toFixed(1)} s on the last
-                watering: <strong>{measuredFlow.toFixed(2)} ml/s</strong>.
-              </div>
-              <button className="btn btn-small" disabled={busy} onClick={() => saveFlow(measuredFlow)}>
-                Use it
-              </button>
-            </div>
-          )}
           <p className="small ink-2">
-            Without a scale: put the outlet in a measuring cup, run it for {testSeconds} seconds, then enter
-            how much came out.
+            Measure the flow: hold the tube in a measuring cup, run the pump for {testSeconds} seconds, then
+            enter how much came out. This water is not counted as watering.
           </p>
           <div className="row" style={{ alignItems: 'flex-end' }}>
             <button
               className="btn btn-small"
-              disabled={busy || !!status.dose}
-              onClick={() => run(() => api.timedRun(profile.id, testSeconds), `Running for ${testSeconds} s`)}
+              disabled={busy}
+              onClick={() =>
+                run(
+                  () => api.timedRun(profile.id, testSeconds),
+                  queuedText(`${testSeconds} s run sent, runs`),
+                )
+              }
             >
               Run {testSeconds} s
             </button>
@@ -402,6 +469,145 @@ function SensorAndOutlet({
               Save flow
             </button>
           </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SensorAndNode({ profile, ps, now }: { profile: PlantProfile; ps: PlantStatus; now: number }) {
+  const { busy, run } = useRun();
+  const calibrate = (point: 'dry' | 'wet') =>
+    run(
+      () => api.calibrate(profile.id, point),
+      (r) => {
+        const age = (r as { ageS: number }).ageS;
+        return `${point === 'dry' ? 'Dry' : 'Wet'} point saved (reading from ${age < 60 ? 'just now' : `${formatDuration(age)} ago`})`;
+      },
+    );
+
+  return (
+    <section className="card">
+      <h2>Sensor and node</h2>
+      <div className="two-col">
+        <div className="stack">
+          <h3>Moisture sensor</h3>
+          <dl className="profile-list">
+            <dt>Status</dt>
+            <dd>{ISSUE_TEXT[ps.issue] ?? ps.issue}</dd>
+            <dt>Raw reading</dt>
+            <dd className="num">{ps.raw ?? '–'}</dd>
+            <dt>Calibration</dt>
+            <dd className="num">
+              dry {profile.calibration.rawDry} · wet {profile.calibration.rawWet}
+            </dd>
+            <dt>Learned</dt>
+            <dd>
+              {ps.mlPerPct
+                ? `${ps.mlPerPct.toFixed(1)} ml raises moisture by 1%`
+                : 'Not yet: needs a few waterings'}
+            </dd>
+          </dl>
+          <p className="small ink-2">
+            The node reads the soil each time it checks in. To calibrate, hold the sensor in the air and wait
+            for a check-in (or press the node&apos;s button, which also counts as a refill), then choose{' '}
+            <em>Set dry point</em>. Then stand it in a glass of water up to its line and do the same with{' '}
+            <em>Set wet point</em>.
+          </p>
+          <div className="row">
+            <button
+              className="btn btn-small"
+              disabled={busy || !profile.node}
+              onClick={() => calibrate('dry')}
+            >
+              Set dry point
+            </button>
+            <button
+              className="btn btn-small"
+              disabled={busy || !profile.node}
+              onClick={() => calibrate('wet')}
+            >
+              Set wet point
+            </button>
+            {(ps.lockedOut || ps.issue === 'no_response') && (
+              <button
+                className="btn btn-small btn-water"
+                disabled={busy}
+                onClick={() => run(() => api.clearFaults(profile.id), queuedText('Clearing faults'))}
+              >
+                Clear faults
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="stack">
+          <h3>Plant node</h3>
+          {!profile.node ? (
+            <p className="muted">
+              This plant has no node, so nothing waters it. Edit the plant to give it one.
+            </p>
+          ) : (
+            <>
+              <dl className="profile-list">
+                <dt>Node</dt>
+                <dd className="num">{profile.node}</dd>
+                <dt>Status</dt>
+                <dd>
+                  {ps.online ? 'Online' : 'Offline'}
+                  {ps.lastSeenAt && `, last check-in ${formatAgo(ps.lastSeenAt, now)}`}
+                </dd>
+                <dt>Next check-in</dt>
+                <dd>
+                  {ps.nextCheckInS === null
+                    ? '–'
+                    : ps.nextCheckInS < 20
+                      ? 'any moment'
+                      : `in ${formatDuration(ps.nextCheckInS)}`}
+                </dd>
+                <dt>Batteries</dt>
+                <dd>
+                  {ps.battery
+                    ? `${ps.battery.pct}% (${(ps.battery.mv / 1000).toFixed(2)} V)${ps.battery.low ? ': replace soon' : ''}`
+                    : '–'}
+                </dd>
+                <dt>Signal</dt>
+                <dd>{ps.linkPct === null ? '–' : `${ps.linkPct}% of messages answered`}</dd>
+                <dt>Firmware</dt>
+                <dd>{ps.firmware ?? '–'}</dd>
+              </dl>
+              {ps.configPending && (
+                <p className="small ink-2">
+                  New settings are on their way to the node: they arrive at its next check-in.
+                </p>
+              )}
+              {ps.repairRequested && (
+                <div className="notice" data-tone="warning">
+                  <div className="grow small">
+                    This node lost its pairing and asks to pair again. Only confirm if you just reset it.
+                  </div>
+                  <button
+                    className="btn btn-small"
+                    disabled={busy}
+                    onClick={() =>
+                      run(() => api.repairNode(profile.node!), 'Pairing again at its next check-in')
+                    }
+                  >
+                    Pair again
+                  </button>
+                </div>
+              )}
+              <div className="row">
+                <button
+                  className="btn btn-small"
+                  disabled={busy}
+                  onClick={() => run(() => api.identify(profile.id), queuedText('The LED blinks'))}
+                >
+                  Blink its LED
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </section>

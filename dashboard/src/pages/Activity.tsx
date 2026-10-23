@@ -34,7 +34,7 @@ function summary(e: DeviceEvent, plantName: string | undefined): string {
         : e.code === 'fallback'
           ? 'on the fallback schedule'
           : e.code === 'timed'
-            ? 'in an outlet test'
+            ? 'in a pump flow test'
             : e.code === 'interrupted'
               ? 'before a restart'
               : 'automatically';

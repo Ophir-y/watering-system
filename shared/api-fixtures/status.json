@@ -2,26 +2,26 @@
   "device": {
     "name": "PlantCare",
     "version": "0.2.0",
-    "uptimeS": 0,
+    "uptimeS": 86400,
     "timeValid": true,
     "now": 1767254490,
     "tzName": "Asia/Jerusalem",
-    "heapFree": 0,
-    "resetReason": ""
+    "heapFree": 154320,
+    "resetReason": "power_on"
   },
   "network": {
-    "mode": "",
-    "ssid": "",
-    "ip": "",
-    "rssi": 0,
+    "mode": "sta",
+    "ssid": "HomeWiFi",
+    "ip": "192.168.1.50",
+    "rssi": -58,
     "apActive": false,
-    "apSsid": "",
-    "internet": false
+    "apSsid": "PlantCare-1A2B",
+    "internet": true
   },
   "storage": {
-    "sdOk": false,
-    "sdUsedMb": 0,
-    "sdTotalMb": 0
+    "sdOk": true,
+    "sdUsedMb": 12.5,
+    "sdTotalMb": 29819.4
   },
   "automation": {
     "enabled": true,
