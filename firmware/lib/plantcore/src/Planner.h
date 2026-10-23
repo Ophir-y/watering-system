@@ -5,7 +5,7 @@
 //     |                               +--(below target)-- Soaking <+ (dose done)
 //     +----------(target reached / limits / no response)-----+
 //
-// The planner only decides; the engine checks safety and drives the outlets.
+// The planner only decides; the engine checks safety and drives the pump.
 #pragma once
 
 #include "EnvModel.h"

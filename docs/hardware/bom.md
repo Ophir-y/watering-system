@@ -1,61 +1,54 @@
 # Shopping list
 
-Sized for **6 plants** (the pin map supports 8). Prices are rough single-unit online prices in USD and vary a lot by seller. You already have the ESP32 boards.
+PlantCare has two kinds of hardware: a **plant node** for every plant, and one **main station**. Prices are rough AliExpress/Amazon figures.
 
-## Core (needed whichever way you deliver the water)
+## Plant node (one per plant)
 
-| Part | Qty | Notes | ≈ USD |
+Each node is battery powered and stands next to its pot with its own bottle of water. It needs no wires to anything else.
+
+| Part | Qty | ≈ USD | Notes |
 |---|---|---|---|
-| ESP32 DevKit V1 (ESP32-WROOM-32, 4 MB flash) | 1 | Already owned. Any 38/30-pin WROOM-32 DevKit with the pins in [wiring.md](wiring.md). | – |
-| Capacitive soil moisture sensor v2.0 | 6 + 2 spare | Buy boards whose timer chip is marked **TLC555** (or 7555): they run at 3.3 V. Avoid **NE555** boards: that chip needs 4.5 V and gives garbage at 3.3 V. | 1–2 each |
-| ADS1115 16-bit ADC breakout | 2 | 4 inputs each. One with ADDR→GND (0x48), one with ADDR→VDD (0x49). Much more accurate than the ESP32's own ADC, and works while Wi-Fi is on. | 2–4 each |
-| SHT40 / SHT41 / SHT45 temperature + humidity breakout | 1 | I²C 0x44. The firmware's driver speaks the **SHT4x** command set; SHT3x, DHT and AHT sensors are not supported. | 3–6 |
-| BH1750 light sensor (GY-302 board) | 1 | I²C 0x23 (ADDR pin low/unconnected). | 1–2 |
-| DS3231 real-time clock module + CR2032 | 1 | Keeps time through power cuts. On the common **ZS-042** board, remove the charging resistor (or the diode next to it) when using a non-rechargeable CR2032, or fit an LIR2032 instead. | 2–3 |
-| microSD card module (SPI) + 8–32 GB microSD card | 1 | Format the card FAT32. The common blue module with a regulator and level shifter works from **5 V** (its outputs are 3.3 V); a bare 3.3 V module works from 3V3. | 1–2 + card |
-| Load cell + HX711 amplifier board | 1 | **5 kg** cell: the full bottle with its valve, holder and top plate weighs about 2.5 kg. Needed for closed-loop dosing, leak and refill detection. | 3–6 |
-| Non-contact liquid level sensor **XKC-Y25-NPN** (5–12 V) | 1 | Independent low-water cut-off, in place of a float switch: it sticks to the outside of the bottle, so the cap needs no second hole. Its output pulls low while there is water behind it and lets go when the level drops below it; a broken wire also reads as "empty" (fail-safe). Buy the **NPN** version, not PNP. Plus one 1N5819 diode for its output ([wiring](wiring.md#reservoir)). | 4–8 |
-| Water leak sensor board (LM393 comparator with DO pin) | 1 | Lies flat under the plants / drip trays. DO goes LOW when wet. | 1 |
-| Active buzzer 5 V + NPN transistor (2N2222 / BC547) + 1 kΩ | 1 | Alarm for critical alerts. | 1 |
-| 12 V DC power supply, 3 A | 1 | Valves draw more than pumps (2 A is enough with pumps). Plus a DC barrel socket. | 6–10 |
-| Buck converter 12 V → 5 V (MP1584 or LM2596 module) | 1 | Powers the ESP32 (via its 5V/VIN pin) and the 5 V parts. Set the output to 5.0 V before connecting anything. | 1–2 |
-| Inline fuse holder + 3 A fuse (2 A with pumps) | 1 | On the 12 V input. | 1–2 |
-| Logic-level N-MOSFET modules | 1 per outlet | **D4184 / AOD4184** or **LR7843** modules switch fully at 3.3 V. Do **not** use IRF520 modules: they barely turn on at 3.3 V and overheat. | 1 each |
-| Flyback diodes 1N5819 (or 1N4007) | 1 per pump/valve | Across every pump or valve coil, if your MOSFET module does not already have one. | – |
-| Resistors and capacitors | – | 10 kΩ (gate pull-downs, input pull-ups), 1 MΩ (ADS1115 input pull-downs), 100 nF (ADS inputs and sensor supplies). | 2 |
-| Perfboard or terminal-block breakout, Dupont/JST leads, 3-core cable for sensors, heat-shrink, enclosure | – | Use screw terminals for anything that leaves the box. | 10–20 |
+| **Board:** ESP32-C3 SuperMini, Seeed XIAO ESP32-C3 or XIAO ESP32-S3 | 1 | 2–7 | Any of the three. Each has its own firmware build. On the **SuperMini, remove the red power LED**: it alone would drain the batteries in a few weeks. |
+| Capacitive soil moisture sensor v2.0, **TLC555** chip | 1 | 1–2 | Avoid boards with an NE555: it does not work at 3.3 V. Read by the board's own ADC; there is no ADS1115. |
+| Mini submersible pump, 3–5 V DC, about 100–250 mA | 1 | 1–2 | The common "DC 3-5 V micro submersible pump". It sits inside the bottle. |
+| Silicone or PVC tube to fit the pump outlet (usually 7–8 mm outer diameter) | ~1 m | 1 | From the bottle to the pot. |
+| Logic-level N-MOSFET: **IRLB8721**, IRLZ44N (TO-220) or AO3400A (SOT-23 on a breakout) | 1 | 0.5 | Switches the pump. **Not a ready-made MOSFET module:** those tie their input and output grounds together, which would short out the current-sense resistor. |
+| 1N5819 Schottky diode | 1 | 0.1 | Across the pump (flyback). |
+| 1 Ω resistor, ¼ W | 1 | – | In the pump's ground wire, so the node can feel the pump's current. |
+| 100 kΩ resistor | 1 | – | Gate pull-down: the pump stays off while the board boots. |
+| 1 MΩ resistors + 100 nF capacitor | 2 + 1 | – | Battery voltage divider. |
+| 3×AA battery holder with switch and lid | 1 | 1 | **Alkaline AA**, or 4×AA NiMH rechargeables (use a 4-cell holder). |
+| Bottle or jar with a lid | 1 | – | The plant's reservoir. Anything from a 0.5 L jar to a 2 L bottle; it only has to fit the pump through its neck or lid. |
+| Small box, perfboard or a few screw terminals, 3-core cable for the sensor | – | 1–2 | |
 
-**Core total: roughly 50–90 USD.**
+**About 5–8 USD per plant** plus the board (you already own the boards).
 
-## Water delivery
+### How long the batteries last
 
-The reservoir is a **2 L Coca-Cola bottle** standing upside down on the scale, with the **master valve fitted to its cap** and one valve per plant below it. How to build it: [assembly.md](assembly.md#reservoir-the-coca-cola-bottle). The firmware also supports pumps, set per plant (*Outlet: Pump / Gravity valve*), so you can switch or mix later.
+The pump draws current only for the seconds it runs. Between check-ins the node sleeps, the soil sensor is unpowered, and the radio is off. A rough budget for 3×AA alkaline (about 2000 mAh usable down to 3.3 V):
 
-### Gravity from the bottle (this build)
+| Where the energy goes | Per day |
+|---|---|
+| Light sleep, ~0.2 mA (board-dependent) | ~4.8 mAh |
+| 288 check-ins (every 5 min), ~40 ms awake each | ~0.3–1 mAh |
+| Pump: a plant drinking 150 ml/day at 1.5 ml/s, ~180 mA | ~5 mAh |
+| **Total** | **~10–11 mAh** |
 
-| Part | Qty | Notes | ≈ USD |
+That comes to roughly **4–8 months per set**, depending mostly on how thirsty the plant is and on your board's real sleep current. The [bench spike](../../firmware/tools/spike/README.md) measures the real sleep current; use its formula with your numbers. Checking in every 10 minutes instead of 5 saves a little. The dashboard shows each node's battery and warns at 3.6 V; below 3.3 V the node refuses to start the pump.
+
+## Main station (one)
+
+It runs the dashboard, keeps the history and alerts, and talks to every node by radio. It drives nothing that moves water, so all of this is optional except the board.
+
+| Part | Qty | ≈ USD | Notes |
 |---|---|---|---|
-| 2 L Coca-Cola bottle with its cap | 1 + 1 spare | Standard 28 mm screw cap. Holds about 1.8 L once the base is cut off. Rinse it well: leftover sugar feeds mould. | – |
-| Small nylon bulkhead hose-barb fitting with nut and 2 rubber washers | 1 + 1 spare | Goes through the centre of the cap. Its flange must sit flat inside the cap, so pick a small one (M8–M10 or G⅛ thread). The barb should fit the master valve's inlet. | 1–2 |
-| 12 V normally-closed **direct-acting** ("zero pressure", "0–x MPa") solenoid valve | 6 + 1 master | The head here is only 0.3–1 m of water. The cheap ½" plastic valves are usually **pilot-operated** and need at least 0.02 MPa (≈ 2 m of water): from a shelf they open weakly or not at all, and may weep. Check the listing says minimum pressure **0 MPa**. The master valve hangs from the cap, so pick a light one with ¼" barbs (under ~100 g). | 6–12 each |
-| Tubing (¼" / 6–8 mm), barbed tees, drip emitters, small inline filter, small hose clamps or zip ties | – | Master valve → filter → manifold of tees → plant valves → pots. | 10 |
-| Bottle holder: a plastic plant pot about 12 cm across | 1 | Holds the bottle neck-down on the scale; the neck and valve go through a hole cut in its bottom. | 1–3 |
-| Opaque tape, spray paint or a fabric sleeve | – | The bottle is clear, and algae grows in light. | – |
-| A sturdy shelf | 1 | Bottle cap 30–100 cm above the pots. More height gives more flow. | – |
+| ESP32 DevKit V1 (WROOM-32) | 1 | already owned | Powered from any USB phone charger. |
+| USB charger, 5 V 1 A | 1 | 3 | |
+| *Optional:* SHT4x temperature/humidity sensor (I²C 0x44) | 1 | 3–6 | Room climate: nodes water a little sooner in warm, dry air. |
+| *Optional:* BH1750 light sensor (I²C 0x23) | 1 | 1–2 | For the light recommendations. |
+| *Optional:* DS3231 RTC module + CR2032 | 1 | 2–3 | Keeps the time without internet. Without it, NTP or the dashboard sets the clock. |
+| *Optional:* microSD module + card (FAT32) | 1 | 1–2 + card | Long-term history. Without it the last day is kept in memory. |
 
-How it differs from pumps: silent and cheap, but the flow falls as the bottle empties (the scale measures every dose anyway, and timed doses are corrected for the water height), and a valve stuck open drains the bottle. That is why the **master valve** is mandatory (water needs both valves open) and why the scale's stuck-open detection matters. The upside of a small reservoir: the most a stuck valve or a split tube can release is about 1.8 L. Expect to refill every few days; the dashboard forecasts when.
+## Not needed any more
 
-### Peristaltic pumps (alternative)
-
-| Part | Qty | Notes | ≈ USD |
-|---|---|---|---|
-| 12 V DC peristaltic dosing pump | 6 | Look for 12 V, 2–5 ml/s ("Kamoer NKP" class or generic dosing pumps). | 8–15 each |
-| Silicone tubing to fit the pump (often 2×4 mm or 3×5 mm), 5 m | 1 | Plus drip stakes or simply a weighted tube end at each pot. | 5 |
-| High-side switch for the pump rail | 1 | P-MOSFET (AOD4185 or IRF9540N) + NPN (2N2222) + 1 kΩ + 2 × 10 kΩ. The firmware turns it on only while a dose runs; see [wiring.md](wiring.md). | 2 |
-
-Why you might switch: a peristaltic pump delivers an accurate volume, primes itself, and **cannot leak or siphon when unpowered**, because the rollers pinch the tube shut. The worst failure (a pump stuck on) is bounded by the rail switch, the hardware timer and the scale. With pumps, the bottle can stand upright and the pump tubes go in through the top; the cap needs no valve.
-
-## Not needed for v1
-
-- Your Seeeduino boards. They could become remote sensor nodes later.
-- An external antenna, display or keypad: the dashboard covers them.
+The single-board build (one ESP32 driving eight outlets from one shared bottle on a scale) needed a 12 V supply, a buck converter, a fuse, a load cell with HX711, a level sensor, two ADS1115s, solenoid valves, a leak sensor and a buzzer. None of them are needed now: each plant has its own small bottle, so a fault can only ever empty that one bottle into its own pot.

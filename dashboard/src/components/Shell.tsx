@@ -69,7 +69,7 @@ export function StopControl({ compact }: { compact?: boolean }) {
       onClick={() =>
         act(() => api.stopAll('stopped from the dashboard'), 'Stopping: each node stops at its next check-in')
       }
-      title="Closes every pump and valve immediately and pauses automatic watering"
+      title="Every node stops its pump at its next check-in, and automatic watering pauses until you resume"
     >
       <Icon name="stop" size={16} /> Stop all
     </button>

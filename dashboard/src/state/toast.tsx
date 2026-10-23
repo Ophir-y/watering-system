@@ -16,14 +16,9 @@ interface ToastApi {
 const Ctx = createContext<ToastApi>({ show: () => {}, error: () => {} });
 
 const FRIENDLY: Record<string, string> = {
-  busy: 'Another plant is being watered right now. Try again in a minute.',
+  busy: "Several commands are already waiting for this plant's node. Try again after its next check-in.",
+  no_node: 'This plant has no node yet. Edit the plant to pick one.',
   emergency_stop: 'Watering is stopped. Resume it first.',
-  leak: 'The leak sensor is wet. Dry it, then resume.',
-  reservoir_empty: 'The reservoir is empty. Refill it first.',
-  lockout: 'This outlet is locked after a fault. Clear the fault first.',
-  plant_disabled: 'This plant is disabled.',
-  plant_daily_limit: 'This plant reached its daily limit.',
-  total_daily_limit: 'The daily total for all plants is used up.',
   invalid_amount: 'Choose an amount between 5 and the pulse limit.',
 };
 

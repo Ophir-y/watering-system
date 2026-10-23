@@ -1,78 +1,56 @@
 # Assembly
 
-## Moisture sensors
-
-- **Waterproof the top.** The electronics at the top of a capacitive sensor are not sealed. Coat the components and the board edges with conformal coating or clear nail varnish, and slide heat-shrink over the top half. Moisture there makes readings drift.
-- **Only the probe goes in the soil**, up to the line printed on it, never deeper.
-- **Same depth, same spot.** Insert it about a third of the way from the pot edge, into the root zone, not touching the pot wall. Once calibrated, do not move it: a different depth or position gives different numbers.
-- **Not under the drip.** Put the watering point on the opposite side of the pot so the sensor reads the soil, not the stream of water passing it. If watering is unusually frequent, this is the first thing to check.
-- **Firm contact.** Press the soil gently around the probe; air gaps read as dry.
-
-## Reservoir: the Coca-Cola bottle
-
-The bottle stands **upside down** in a holder on the scale. The master valve is fitted to its cap, so water leaves through the cap by gravity. The base is cut off: that open top lets air in as the water drains, and it is where you refill.
+## A plant unit
 
 ```
-        ┌ ─ ─ ─ ─ ─ ┐   cut-off base resting on top: keeps dust out, lets air in
-        │           │
-        │   water   │   2 L bottle, upside down, wrapped against light
-        │           ▐▌  level sensor, on the wall just above where the bottle narrows
-     ┌──┤           ├──┐
-     │   ╲         ╱   │   holder: plant pot with a hole cut in its bottom
-  ═══╧════╲_______╱════╧═══   scale top plate with a hole, reaching past the shelf edge
-            │     │         cap with the bulkhead fitting
-           ┌┴─────┴┐
-           │ valve │        master valve, hanging free
-           └───┬───┘
-               ╰──╮         outlet tube: a loose loop, clipped to the shelf, on to the manifold
+            ┌─ node box (board, MOSFET, batteries)
+            │
+   tube ────┼───────────────╮
+            │               │ drip end clipped to the pot rim,
+  ┌──────┐  │            ┌──┴──────┐  opposite side from the sensor
+  │ lid  │◄─┘ wires      │  pot    │
+  │~~~~~~│               │   ║     │ soil sensor, up to its line
+  │ pump │  1 mm hole in │   ║     │
+  └──────┘  the tube     └─────────┘
+   bottle   above the
+            water line
 ```
 
-1. **Prepare the bottle.** Rinse it with hot water until nothing feels sticky: sugar left inside grows mould. Cut the base off just above the feet, about 4 cm from the bottom, and smooth the edge. Keep the base: it becomes the cover.
-2. **Fit the cap.** Drill the centre of the cap to the thread size of the bulkhead fitting. Push the fitting through from the inside with a rubber washer under its flange, put the second washer and the nut on the outside, and tighten firmly.
-3. **Attach the master valve** directly below the cap, flow arrow pointing away from the bottle: push its inlet onto the fitting's barb (or join them with 2–3 cm of tube) and secure it with a small hose clamp or zip tie. Keep the joint short, so the valve hangs straight and is carried by the bottle.
-4. **Leak test.** Screw the cap on, stand the bottle neck-down in a jug, fill it and leave it for an hour. The cap, fitting and valve must not drip. The valve is normally closed, so it holds without power.
-5. **Level sensor.** Stick the XKC-Y25 straight onto the plastic at the bottom of the straight part, just above where the bottle narrows toward the neck. It reports "empty" with roughly 250 ml left, which keeps air out of the tubing. With water behind it, its LED should be on; without, off. If it does not switch cleanly, turn its sensitivity screw, if yours has one. It is the independent backup to the scale: either one reporting "empty" stops all watering.
-6. **Block the light.** Wrap the bottle in opaque tape or paint it, around the sensor. Leave a thin vertical strip clear if you want to see the level.
-7. **Holder and scale.** Cut a hole in the bottom of the plant pot just big enough for the cap and valve to pass through, so the bottle's shoulder rests on the pot. Mount the load cell between two rigid plates (plywood or 3 mm aluminium), bolted at opposite ends of the bar so it can flex; the arrow on the cell shows the direction of force. Let the top plate reach past the edge of the shelf, cut a matching hole there, and stand the pot over it. The valve then hangs in free air below.
-8. **Nothing else touches the weighed part.** The bottle, pot, valve and top plate must not touch the shelf or wall. The outlet tube, the valve's two wires and the sensor cable all hang from it: give each one a loose loop and clip it to the shelf (not the scale) a few cm away. Each then always carries the same small weight, which the tare removes. A tight tube or wire changes the reading every time it is touched.
-9. **Fill and cover.** Fill to about 2 cm below the cut edge and rest the cut-off base on top as a cover. It must not seal: if no air gets in, the bottle dents inward and the flow stops.
+### The bottle and pump
 
-**Refilling:** pour from a jug into the top while the bottle stays in place; the valve, tube and wires stay connected. The scale logs the refill by itself.
+1. **Any bottle or jar with a lid works.** Choose the size so that the pot and its saucer can take a full bottle without overflowing. That way, even if everything failed at once, the worst case is one bottle of water in its own pot.
+2. Put the pump on the bottom of the bottle. Run the tube and the pump wires out through a hole in the lid (or the neck), and leave a small gap so air can get in as the water level drops.
+3. **Stop siphoning with a 1 mm hole.** If the pot's drip end is lower than the water in the bottle, water keeps flowing after the pump stops. Pierce a 1 mm hole in the tube just inside the bottle, above the full water line. When the pump stops, air enters there and breaks the siphon. A few drops come out of the hole while pumping; they fall back into the bottle.
+4. Clip the tube's end to the pot rim, on the side **away from** the moisture sensor.
+5. Dark bottles, or a sleeve of opaque tape, keep algae out.
+6. Fill the bottle and note how much you poured in. Enter that as the plant's **Bottle holds** amount.
 
-Calibrate the scale in the dashboard with the empty bottle, cap and valve in place ([getting started, step 6](../getting-started.md#6-reservoir-scale)).
+### The soil sensor
 
-## Leak sensor
+- **Waterproof the top.** The electronics at the top of a capacitive sensor are not sealed. Coat the components and the board edges with conformal coating or clear nail varnish, and slide heat-shrink over the top half.
+- Insert **only the probe**, up to the line printed on it, about a third of the way in from the pot edge.
+- Not under the drip, and the same depth and spot once calibrated.
+- Press the soil gently around the probe; air gaps read as dry.
 
-Lay it flat where water would collect first if something leaks: under the bottle's valve or in the lowest drip tray. When it gets wet, every outlet closes and watering stays stopped until you resume from the dashboard.
+### The node box
 
-## Tubing
+- Mount the board, MOSFET, resistors and battery holder in a small box beside the pot, higher than the bottle's water line, never under the pot or the saucer.
+- Keep the battery switch and the BOOT button reachable: the button is how you tell the node "I refilled the bottle".
+- Strain-relieve the pump and sensor cables where they leave the box.
 
-### Pumps
+## Main station
 
-- Put the pump inlet tubes at the bottom of the reservoir, weighted, but above any sediment.
-- Run each outlet tube to its pot and fix the end with a drip stake.
-- A peristaltic pump blocks flow when stopped, so there is no siphon. If you ever use **submersible** pumps instead, the outlet must end above the reservoir's water level or have an anti-siphon hole, otherwise the reservoir drains through the pot after the pump stops.
+The ESP32 DevKit on a USB charger, with the optional climate sensors, RTC and SD card wired as in [wiring.md](wiring.md#main-station). Mount the climate sensors away from the charger and direct sun, at about plant height.
 
-### Gravity
+## First power-up
 
-- Bottle cap → **master valve** → small filter → manifold (tees) → one valve per plant → tube to the pot.
-- Fix the filter, manifold and plant valves to the shelf or wall. Only the master valve hangs from the bottle.
-- Every drip outlet must be lower than the cap. Keep the drop (cap to drip outlet) the same for all plants if you can, and enter it in each plant's outlet settings.
-- Fill the bottle and open each valve once by hand (*plant page → Run 10 s*) to push the air out of the lines.
-
-## Electronics box
-
-- Keep 12 V wiring and the MOSFETs on one side and the ESP32, ADS1115s and sensor terminals on the other.
-- Use screw terminals for everything that leaves the box, and label them with the channel numbers.
-- Leave the BOOT button reachable. A short press is the physical "stop all watering" button.
-- Mount the box higher than the plants and the reservoir, never under them.
-
-## First power-up checklist
-
-1. With the pumps/valves **disconnected**, power up and check the status LED: solid while booting, then a short flash every 3 s.
-2. Join the **PlantCare-XXXX** hotspot (password `plantcare`) and open `http://192.168.4.1`. Run the setup wizard.
-3. Add one plant and calibrate its sensor: dry point in the air, wet point in a glass of water.
-4. Calibrate the scale.
-5. Connect one pump/valve, put its tube into a measuring cup, and use *Run 10 s* on the plant page to measure the flow.
-6. Test the interlocks: unplug the level sensor's yellow wire (watering locks out), wet the leak sensor (everything stops; the buzzer sounds outside quiet hours), unplug a moisture sensor (fault alert).
-7. Connect the rest, one plant at a time.
+1. **Main station first.** Flash it, power it, and run the setup wizard (see [getting started](../getting-started.md#4-first-boot-the-main-station)).
+2. **One node, pump not in water yet.** Flash it over USB, unplug USB, switch the batteries on. The LED (if the board has one) flashes twice: not paired. Within a minute the dashboard shows **New plant node found**.
+3. **Add it as a plant.** Pick the species and enter the bottle size. At its next check-in the node pairs, gets its settings and flashes once.
+4. **Calibrate the sensor** in air and in a glass of water (plant page, *Sensor and node*).
+5. **Measure the flow:** fill the bottle, hold the tube in a measuring cup, and on the plant page choose *Run 10 s*. The run happens at the node's next check-in. Enter the amount from the cup and *Save flow*.
+6. **Check the safety behaviour:**
+   - Lift the pump out of the water during a run. After the pump has learned its current (a few waterings), it should stop and the bottle should show *empty: the pump ran dry*.
+   - Unplug the pump: *Pump drew no current*, and the pump stays locked until you clear it.
+   - Pull the batteries: the plant shows *Node offline* after three missed check-ins (about 16 minutes).
+7. Put the probe and the tube into the pot, fill the bottle, and press the node's button.

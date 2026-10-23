@@ -72,9 +72,7 @@ export function Alerts() {
       <div className="page-head">
         <div>
           <h1>Alerts</h1>
-          <p>
-            Acknowledging stops reminders and the buzzer. An alert clears by itself once the problem is gone.
-          </p>
+          <p>Acknowledging stops phone reminders. An alert clears by itself once the problem is gone.</p>
         </div>
         {active.some((a) => !a.acked) && (
           <button className="btn" onClick={() => act(api.ackAllAlerts, 'All alerts acknowledged')}>

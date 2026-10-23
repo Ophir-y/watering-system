@@ -1,10 +1,10 @@
 # How watering decisions are made
 
-All of this lives in `firmware/lib/plantcore/` and is covered by the native tests. Numbers are the defaults; most are settings or per-plant profile values.
+All of this runs on each plant's node, lives in `firmware/lib/plantcore/` and is covered by the native tests. Numbers are the defaults; most are settings or per-plant profile values.
 
 ## 1. Reading the soil
 
-- Every **60 s** (*Check sensors every*), each configured channel is read: 9 conversions on the ADS1115 at 860 samples/s, median taken.
+- The node reads its soil at **every check-in** (every 5 minutes, *Nodes check in every*), and **every minute during a watering session**. The sensor is powered from a GPIO for 0.3 s, and 9 readings of the board's ADC are taken; the median counts. Raw values are millivolts × 8 (the scale of the ADS1115 the first build used), so the sensor fault thresholds below are in those units.
 - The raw value is mapped to **0–100 %** between the plant's two calibration points: **dry** (sensor in air) = 0 %, **wet** (sensor in water) = 100 %. Values are relative to the sensor, not a volumetric water content, so species values are starting points to tune.
 - Readings are smoothed with an exponential moving average (α = 0.3). The trend over the last three readings (%/min) is tracked too.
 - A sudden rise of more than 8 % that the system did not cause is logged as "watered outside the system", and the smoothing jumps to the new level.
@@ -42,45 +42,58 @@ Overwatering mostly comes from sensor lag: water takes minutes to reach the sens
 3. **Measure and learn.** A rise of at least 1.5 % updates ml-per-% (moving average, 70 % old / 30 % new).
 4. **Decide.** Stop when within 0.5 % of the target. Otherwise pulse again, up to **6 pulses** or the daily budget.
 
-If a session hits its limits while the soil is still below the start-watering point, you get *Target not reached*. If **two pulses produce less than 1 % rise**, the session stops as *No moisture response* (the sensor is probably out of the soil, or the water is not reaching the pot), and automatic watering for that plant pauses until the reading rises by 5 % on its own or you clear the fault.
+If a session hits its limits while the soil is still below the start-watering point, you get *Target not reached*. If **two pulses produce less than 1 % rise**, the session stops as *No moisture response*, and the pump's current decides what that means:
+
+- **The pump felt water moving** (its current was normal): the water went somewhere, but the sensor did not see it. The sensor is probably out of the soil, or the tube is not in the pot. Automatic watering pauses until the reading rises by 5 % on its own or you clear the fault.
+- **Otherwise** (no current sensing, or not learned yet): the likeliest cause is an empty bottle. It is marked empty, so nothing is pumped until it is refilled.
 
 The 30-day simulation in `test_scenarios` keeps four quite different plants inside their bands, with no overshoot beyond 3 % above "too wet" and never below "very dry".
 
 ## 5. Safety rules (every dose, automatic or manual)
 
 A dose is refused if:
-- the leak sensor is wet, an emergency stop is active, the reservoir is empty, another dose is running, or the plant's outlet is locked after a fault;
+- an emergency stop is active (from the dashboard, delivered with every reply), the **bottle is empty**, the **batteries are flat** (below 3.3 V at rest), or the pump is locked after a fault;
 - the plant is disabled;
 - *(automatic only)* automation is paused, the plant is manual-only, its sensor has failed, or the rest between sessions has not passed (pulses within a session are exempt).
 
-The amount is then capped at the largest pulse (plant limit for automatic, global hard limit of 250 ml for manual), at what is left of the plant's daily limit (plant limit, or the 1,500 ml hard limit for manual), and at what is left of the 5,000 ml daily total for all plants. Doses below 5 ml are not worth opening an outlet for.
+The amount is then capped at the largest pulse (plant limit for automatic, global hard limit of 250 ml for manual) and at what is left of the plant's daily limit (plant limit, or the 1,500 ml hard limit for manual). Doses below 5 ml are not worth starting the pump for. Until the pump's current has been learned, a dose is also capped at what the fuel gauge says is **above the reserve** (default 50 ml), so the pump never sucks air.
 
-Each dose may keep its outlet open for at most **1.5 × the expected time + 3 s**, and never more than the hard limit (120 s). A hardware timer enforces the hard limit + 5 s even if the software hangs.
+Each dose may run the pump for at most **1.5 × the expected time + 3 s**, and never more than the hard limit (120 s). A hardware timer on the node enforces the hard limit + 5 s even if the software hangs.
 
 ## 6. Dosing
 
-**With the scale (closed loop).** The outlet opens and the reservoir weight is watched:
-- it closes when the measured loss reaches the dose (2 ml early, for the water still in the tube);
-- **no flow:** if after 60 % of the expected time (at least 4 s) less than max(3 ml, 15 %) has left, it closes, the outlet is **locked**, and *No flow* is raised;
-- **slow flow:** if the time limit is hit with at least 25 % delivered, the partial dose is kept;
-- after closing, it waits 4 s for drips, then **watches for 20 s**: a further loss of more than max(10 ml, 25 % of the dose) means a valve stuck open or a siphon, so it triggers an **emergency stop**, a critical alert and an outlet lockout.
+There is no scale: the pump runs for *dose ÷ flow*. The flow is the profile's measured flow (*Measure flow* on the plant page) times the correction the fuel gauge has learned (§7).
 
-**Without the scale (open loop).** The outlet stays open for *dose ÷ calibrated flow*. Gravity valves correct the flow for the current water height: flow ∝ √(drop + water depth). The depth is estimated from the fill level as if the sides were straight; in the bottle's narrow shoulder the flow estimate is up to about 10 % low, so timed doses run slightly long there. With the scale this does not matter.
+While it runs, the node reads the pump current every 100 ms, divided by the battery voltage so that draining cells are not mistaken for a problem. The first 0.4 s (start-up surge) is ignored. After three healthy runs it knows the pump's normal **wet** current, and then:
 
-## 7. Reservoir
+| Seen | For | Means | Effect |
+|---|---|---|---|
+| under 65 % of the wet current | 1.5 s | the pump is sucking air | stop; the bottle is **empty**; only the water before the drop is counted |
+| under 20 mA (needs no learning) | 1 s | nothing connected | stop; pump **locked** until you clear it |
+| over 2× the wet current | 1 s | impeller blocked | stop; pump **locked** |
 
-- **Level** comes from the scale: net weight (container tared out) = ml.
-- **Empty** when the low-water sensor (the float switch input) opens, the container is lifted off the scale, or less than 150 ml is left. Any one of them stops everything and aborts a running dose.
-- **Low** below 20 % or when the forecast drops under 2 days (forecast = level ÷ average daily use).
-- **Refill** detected when the stable weight rises by ≥ 200 ml. Lifting the container off and putting it back is recognised, not mistaken for a leak.
-- **Unexplained loss:** ≥ 60 ml disappearing while nothing is being watered, either suddenly (confirmed over 30 s) or accumulated within 2 h. It means a leak or a stuck valve, so it triggers an emergency stop and a critical alert. Slow evaporation never trips it.
-- If the float switch says empty but the scale shows over 30 %, one of them is faulty; the reservoir is treated as empty and you get a warning.
+A run only teaches the wet current if it ended normally and the gauge thought the bottle held water. *Measure flow* runs (pump into a cup) count against the bottle but not as watering the plant. Turn off *Feel the pump run dry* in the plant's settings if the 1 Ω resistor is not fitted.
+
+## 7. The bottle (fuel gauge)
+
+There is no level sensor. The node keeps a gauge instead:
+
+- **Counting:** every dose subtracts what was pumped. A new node assumes its bottle is full.
+- **Refill:** a short press of the node's button, or *Refilled* in the dashboard, resets the gauge to full.
+- **Low** below the plant's refill reminder (default 25 %), or when it lasts less than 2 days at the current rate and is under half full.
+- **Empty**, and no more pumping until refilled, for one of three reasons:
+  1. the **pump ran dry** (§6), the most reliable;
+  2. the **gauge counted it empty** (only while the pump's current is not learned yet; afterwards the gauge only warns and the pump decides);
+  3. **watering stopped making the soil wetter** (§4).
+- **Self-calibration:** when the pump runs dry after a confirmed full refill, the gauge compares what it counted with what the bottle holds. The difference corrects the pump flow by half the error each cycle (within 0.5–2×), so the gauge and the doses get more accurate over a few refills without a measuring cup.
+
+The plant page shows the level, days left and why the bottle was called empty, plus a chart of the level over time.
 
 ## 8. Sensor faults
 
 | Fault | Detected when | Effect |
 |---|---|---|
-| Not calibrated | dry and wet points less than 1,500 counts apart | no automatic watering (info) |
+| Not calibrated | dry and wet points less than 1,500 counts (188 mV) apart | no automatic watering (info) |
 | Bus error | 3 failed ADC reads in a row | sensor failed |
 | Disconnected / shorted | 3 readings below 0.25 V or above 3.25 V | sensor failed |
 | Out of range | 3 readings beyond the calibration points ± 25 % | sensor failed |
@@ -92,15 +105,17 @@ When a sensor **fails**, the plant's policy applies: **pause** (default) or **fi
 
 ## 9. Power cuts, reboots and outages
 
-- Before an outlet opens, the device saves "dose in progress (channel, ml)" to flash. After an unexpected restart that dose is **counted in full** and the rest period starts from the restart, so a crash can never cause a double watering. You get an *Interrupted watering* warning.
-- Daily totals reset at local midnight. Without a valid clock they reset every 24 h of uptime instead, so a missing clock can never lock watering forever.
-- With no clock at all the watering window is ignored (better to water at night than not at all) and you get a *Clock not set* warning. Set it from the dashboard, or the DS3231 keeps it.
-- Wi-Fi or internet outages change nothing about watering.
+- Before the pump starts, the node saves "dose in progress (ml)" to flash. After an unexpected restart (batteries pulled, brown-out) that dose is **counted in full**, taken off the bottle gauge, and the rest period starts from the restart, so a crash can never cause a double watering. You get an *Interrupted watering* warning.
+- Daily totals reset at local midnight (the node gets the time and its UTC offset in every reply). Without a valid clock they reset every 24 h of uptime instead, so a missing clock can never lock watering forever.
+- With no clock at all the watering window is ignored (better to water at night than not at all).
+- **The main station being off changes little.** Each node keeps watering with its last settings. It has no new room climate (after 30 minutes the climate adjustments switch off) and, after a reboot, no clock. Dashboard commands wait in the station until the node next checks in. A node that misses three check-ins scans the radio channels to find the station again.
+- **A node going quiet** (flat batteries, out of range) raises *Node offline* on the station after three missed check-ins plus a minute.
+- **Batteries:** *Batteries low* below 3.6 V at rest (measured between pump runs, since the cells sag while it runs), and the pump is refused below 3.3 V so a weak cell cannot brown out the board mid-dose.
 
 ## 10. Environment alerts
 
-Temperature or humidity outside a plant's range for more than 2 hours raises a note (info, not pushed to the phone) for that plant. Moisture below "very dry" raises *Plant too dry*. Above "too wet" for 2 days raises *Plant too wet* (check drainage).
+Temperature or humidity (from the main station's sensors) outside a plant's range for more than 2 hours raises a note (info, not pushed to the phone) for that plant. Moisture below "very dry" raises *Plant too dry*. Above "too wet" for 2 days raises *Plant too wet* (check drainage).
 
 ## 11. Recommendations (dashboard)
 
-`dashboard/src/lib/recommendations.ts` compares the profile with the last 7 days: daily light peak (median), average humidity, temperature extremes, waterings per day, weekly water use against the pot size, current wetness, resting season and reservoir forecast. It runs in the browser to keep the firmware small.
+`dashboard/src/lib/recommendations.ts` compares the profile with the last 7 days: daily light peak (median), average humidity, temperature extremes, waterings per day, weekly water use against the pot size, current wetness, resting season and the bottle's forecast. It runs in the browser to keep the firmware small.

@@ -40,7 +40,8 @@ function summary(e: DeviceEvent, plantName: string | undefined): string {
               : 'automatically';
     return `${plantName ?? 'A plant'} watered ${how}: ${formatMl(e.ml)}`;
   }
-  if (e.type === 'refill') return `Reservoir refilled${e.ml ? `: +${formatMl(e.ml)}` : ''}`;
+  if (e.type === 'refill')
+    return `${plantName ? `${plantName}'s bottle` : 'Bottle'} refilled${e.ml ? `: ${formatMl(e.ml)}` : ''}`;
   if (e.type === 'alert_cleared') return `Resolved: ${e.code.replace(/_/g, ' ')}`;
   return e.detail || e.code.replace(/_/g, ' ');
 }
